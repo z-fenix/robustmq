@@ -91,7 +91,7 @@ futures = "0.3.32"
 futures-util = "0.3.31"
 async-trait = "0.1.88"
 async-stream = "0.3.6"
-async-nats = "0.38"
+async-nats = "0.47.0"
 async-channel = "2.3"
 
 # ====================
@@ -100,7 +100,7 @@ async-channel = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
-bincode = "1.3.3"
+bincode = "3.0.0"
 toml = "1.1.2"
 rkyv = { version = "0.8.15" }
 
@@ -164,11 +164,11 @@ quinn = { version = "0.11.6", default-features = false, features = [
 # Cryptography & Hashing
 # ====================
 md5 = "0.8.0"
-sha1 = "0.10.6"
-sha2 = "0.10.9"
-bcrypt = "0.17.1"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+bcrypt = "0.19.0"
 pbkdf2 = "0.12.2"
-hmac = "0.12.1"
+hmac = "0.13.0"
 hex = "0.4.3"
 base64 = "0.22.1"
 jsonwebtoken = { version = "10.0.0", default-features = false, features = [
@@ -179,10 +179,10 @@ jsonwebtoken = { version = "10.0.0", default-features = false, features = [
 # ====================
 # Database & Storage
 # ====================
-rocksdb = { version = "0.22.0", default-features = false, features = ["multi-threaded-cf", "lz4", "zstd"] }
-mysql = { version = "27.0.0", default-features = false }
+rocksdb = { version = "0.24.0", default-features = false, features = ["multi-threaded-cf", "lz4", "zstd"] }
+mysql = { version = "28.0.0", default-features = false }
 redis = { version = "1.2.0", default-features = false, features = ["r2d2", "tokio-comp", "connection-manager"] }
-mongodb = { version = "2.8", default-features = false, features = ["tokio-runtime"] }
+mongodb = { version = "3.5.2", default-features = false, features = [] }
 sqlx = { version = "0.8", default-features = false }
 r2d2 = "0.8.10"
 r2d2_mysql = { version = "25.0.0", default-features = false }
@@ -205,17 +205,17 @@ pulsar = { version = "6.7.2", default-features = false, features = [
     "tokio-runtime",
     "auth-oauth2",
 ] }
-lapin = { version = "2.5.0", default-features = false, features = ["rustls"] }
-amq-protocol = "7.2.3"
+lapin = { version = "4.4.0", default-features = false, features = ["rustls"] }
+amq-protocol = "10.0.1"
 cookie-factory = "0.3.3"
-nom = { version = "7.0", features = ["std"] }
+nom = { version = "8.0.0", features = ["std"] }
 elasticsearch = { version = "8.19.0-alpha.1", default-features = false }
-paho-mqtt = { version = "0.13.3", default-features = false, features = [
+paho-mqtt = { version = "0.14.0", default-features = false, features = [
     "bundled",
     "ssl",
 ] }
-clickhouse = "0.14.2"
-scylla = "0.15"
+clickhouse = "0.15.0"
+scylla = "1.5.0"
 
 # ====================
 # Distributed Systems
@@ -235,8 +235,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 ] }
 tracing-appender = "0.2.0"
 prometheus = "0.14.0"
-prometheus-client = "0.23.1"
-console-subscriber = "0.4.1"
+prometheus-client = "0.24.1"
+console-subscriber = "0.5.0"
 opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust.git", rev = "b6783a10984146c62ceaa6997fef1385d2ee5ae8", features = [
     "trace",
 ] }
@@ -246,21 +246,21 @@ opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rus
 opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust.git", rev = "b6783a10984146c62ceaa6997fef1385d2ee5ae8", features = [
     "grpc-tonic",
 ] }
-pprof = { version = "0.14.0", features = ["flamegraph"] }
+pprof = { version = "0.15.0", features = ["flamegraph"] }
 
 # ====================
 # CLI & Command Line Tools
 # ====================
 clap = { version = "4.6.0", default-features = false, features = ["std", "derive"] }
-clap-cargo = "0.14.1"
+clap-cargo = "0.18.3"
 prettytable-rs = "0.10"
 
 # ====================
 # Data Validation & Schema
 # ====================
-validator = { version = "0.19", default-features = false, features = ["derive"] }
+validator = { version = "0.20.0", default-features = false, features = ["derive"] }
 valico = "4.0.0"
-apache-avro = "0.17.0"
+apache-avro = "0.21.0"
 
 # ====================
 # Utilities
@@ -272,26 +272,25 @@ uuid = { version = "1.23.0", default-features = false, features = ["v4"] }
 xid = "1.1"
 dashmap = { version = "6.1.0", default-features = false, features = ["serde"] }
 arc-swap = "1.9"
-rand = "0.8.5"
-regex = "1.10.4"
-grep = "0.3.2"
+rand = "0.10.1"
+regex = "1.12.3"
+grep = "0.4.1"
 byteorder = "1.5.0"
 crc32fast = "1.4.2"
 ipnet = "2.12.0"
-reqwest = { version = "0.12.23", default-features = false, features = [
+reqwest = { version = "0.13.2", default-features = false, features = [
     "json",
-    "rustls-tls",
     "http2",
 ] }
 genai = "0.5.3"
 tempfile = "3.27.0"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
-bson = "2.9"
+bson = "3.1.0"
 strum = "0.28"
 strum_macros = "0.28"
 governor = "0.10.1"
 os_info = "3.8.2"
-sysinfo = "0.29.10"
+sysinfo = "0.38.4"
 local-ip-address = "0.6.11"
 num_cpus = "1.16"
 chrono-tz = "0.10.3"
@@ -300,7 +299,7 @@ parking_lot = "0.12.5"
 # ====================
 # Testing
 # ====================
-mockall = "0.13.1"
+mockall = "0.14.0"
 
 # ====================
 # Macro & Proc-Macro
