@@ -14,16 +14,16 @@
 
 use super::default::{
     default_accept_thread_num, default_broker_id, default_broker_ip, default_channels_per_address,
-    default_cluster_name, default_delay_task, default_delay_task_handler_concurrency,
-    default_delay_task_queue_num, default_engine_runtime, default_flapping_ban_time,
-    default_flapping_max_connections, default_flapping_window_time, default_grpc_port,
-    default_handler_thread_num, default_heartbeat_check_time_ms, default_heartbeat_timeout_ms,
-    default_http_port, default_keep_alive_default_time, default_keep_alive_default_timeout,
-    default_keep_alive_enable, default_keep_alive_max_time, default_limit_max_connection_rate,
-    default_limit_max_connections_per_node, default_limit_max_publish_rate,
-    default_limit_max_sessions, default_limit_max_topics, default_max_admin_http_uri_rate,
-    default_max_message_expiry_interval, default_max_network_connection,
-    default_max_network_connection_rate, default_max_packet_size,
+    default_cluster_name, default_data_path, default_delay_task,
+    default_delay_task_handler_concurrency, default_delay_task_queue_num, default_engine_runtime,
+    default_flapping_ban_time, default_flapping_max_connections, default_flapping_window_time,
+    default_grpc_port, default_handler_thread_num, default_heartbeat_check_time_ms,
+    default_heartbeat_timeout_ms, default_http_port, default_keep_alive_default_time,
+    default_keep_alive_default_timeout, default_keep_alive_enable, default_keep_alive_max_time,
+    default_limit_max_connection_rate, default_limit_max_connections_per_node,
+    default_limit_max_publish_rate, default_limit_max_sessions, default_limit_max_topics,
+    default_max_admin_http_uri_rate, default_max_message_expiry_interval,
+    default_max_network_connection, default_max_network_connection_rate, default_max_packet_size,
     default_max_session_expiry_interval, default_meta_addrs, default_meta_runtime,
     default_mqtt_flapping_detect, default_mqtt_keep_alive, default_mqtt_limit_cluster,
     default_mqtt_limit_tenant, default_mqtt_offline_message, default_mqtt_protocol,
@@ -32,22 +32,19 @@ use super::default::{
     default_mqtt_slow_subscribe, default_mqtt_system_monitor, default_mqtt_tcp_port,
     default_mqtt_tls_port, default_mqtt_websocket_port, default_mqtt_websockets_port,
     default_network, default_offline_message_enable, default_offline_message_expire_ms,
-    default_offline_message_max_num, default_pprof_frequency, default_pprof_port,
-    default_queue_size, default_raft_write_timeout_sec, default_receive_max, default_rocksdb,
-    default_rocksdb_data_path, default_rocksdb_max_open_files, default_roles, default_runtime,
-    default_runtime_worker_threads, default_schema_echo_log, default_schema_enable,
-    default_schema_failed_operation, default_schema_log_level, default_schema_strategy,
-    default_session_expiry_interval, default_slow_subscribe_delay_type,
-    default_slow_subscribe_record_time, default_storage_expire_scan_task_num,
-    default_storage_io_thread_num, default_storage_max_segment_size,
-    default_storage_offset_enable_cache, default_storage_tcp_port,
-    default_system_monitor_cpu_watermark, default_system_monitor_memory_watermark,
-    default_system_monitor_topic_interval_ms, default_tls_cert, default_tls_key,
-    default_topic_alias_max,
+    default_offline_message_max_num, default_queue_size, default_raft_write_timeout_sec,
+    default_receive_max, default_roles, default_runtime, default_runtime_worker_threads,
+    default_schema_echo_log, default_schema_enable, default_schema_failed_operation,
+    default_schema_log_level, default_schema_strategy, default_session_expiry_interval,
+    default_slow_subscribe_delay_type, default_slow_subscribe_record_time,
+    default_storage_expire_scan_task_num, default_storage_io_thread_num,
+    default_storage_max_segment_size, default_storage_offset_enable_cache,
+    default_storage_tcp_port, default_system_monitor_cpu_watermark,
+    default_system_monitor_memory_watermark, default_system_monitor_topic_interval_ms,
+    default_tls_cert, default_tls_key, default_topic_alias_max,
 };
+use crate::common::default_log;
 use crate::common::Log;
-use crate::common::Prometheus;
-use crate::common::{default_log, default_pprof, default_prometheus};
 use common_base::enum_type::delay_type::DelayType;
 use serde::{Deserialize, Serialize};
 use toml::Table;
@@ -72,20 +69,27 @@ pub enum LLMPlatform {
     Ollama,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct LLMClientConfig {
-    pub platform: LLMPlatform,
-    pub model: String,
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct LLMConfig {
+    // embedding
+    pub embedding: Option<String>,
+    pub embedding_model_path: Option<String>,
+
+    // llm api
+    pub platform: Option<LLMPlatform>,
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
 }
 
-impl LLMClientConfig {
+impl LLMConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.model.trim().is_empty() {
-            return Err("model cannot be empty".to_string());
+        if let Some(model) = &self.model {
+            if model.trim().is_empty() {
+                return Err("model cannot be empty".to_string());
+            }
         }
 
         if let Some(base_url) = &self.base_url {
@@ -94,7 +98,7 @@ impl LLMClientConfig {
             }
         }
 
-        if self.platform != LLMPlatform::Ollama {
+        if !matches!(self.platform, Some(LLMPlatform::Ollama)) {
             let token = self.token.as_deref().unwrap_or_default().trim();
             if token.is_empty() {
                 return Err("token is required for non-ollama platforms".to_string());
@@ -129,23 +133,17 @@ pub struct BrokerConfig {
     #[serde(default = "default_meta_addrs")]
     pub meta_addrs: Table,
 
-    #[serde(default = "default_prometheus")]
-    pub prometheus: Prometheus,
-
     #[serde(default = "default_log")]
     pub log: Log,
 
     #[serde(default = "default_runtime")]
     pub runtime: Runtime,
 
-    #[serde(default = "default_pprof")]
-    pub pprof: PProf,
-
-    #[serde(default = "default_rocksdb")]
-    pub rocksdb: Rocksdb,
+    #[serde(default = "default_data_path")]
+    pub data_path: String,
 
     #[serde(default)]
-    pub llm_client: Option<LLMClientConfig>,
+    pub llm_client: LLMConfig,
 
     #[serde(default)]
     pub cluster_limit: ClusterLimit,
@@ -207,6 +205,10 @@ pub struct BrokerConfig {
     // Shared broker network config (handler pool + request channel)
     #[serde(default = "default_network")]
     pub broker_network: Network,
+
+    // Admin HTTP API authentication
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 impl Default for BrokerConfig {
@@ -220,12 +222,10 @@ impl Default for BrokerConfig {
             grpc_port: default_grpc_port(),
             http_port: default_http_port(),
             meta_addrs: default_meta_addrs(),
-            prometheus: default_prometheus(),
             log: default_log(),
             runtime: default_runtime(),
-            pprof: default_pprof(),
-            rocksdb: default_rocksdb(),
-            llm_client: None,
+            data_path: default_data_path(),
+            llm_client: LLMConfig::default(),
             cluster_limit: ClusterLimit::default(),
             delay_task: default_delay_task(),
 
@@ -258,6 +258,7 @@ impl Default for BrokerConfig {
 
             // Shared broker network config
             broker_network: default_network(),
+            admin: AdminConfig::default(),
         }
     }
 }
@@ -310,6 +311,9 @@ pub struct Runtime {
 
     #[serde(default = "default_tls_key")]
     pub tls_key: String,
+
+    #[serde(default)]
+    pub pprof_enable: bool,
 }
 
 impl Default for Runtime {
@@ -408,20 +412,6 @@ impl Default for MQTTLimit {
                 max_publish_rate: 10000,
             },
         }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Rocksdb {
-    #[serde(default = "default_rocksdb_data_path")]
-    pub data_path: String,
-    #[serde(default = "default_rocksdb_max_open_files")]
-    pub max_open_files: i32,
-}
-
-impl Default for Rocksdb {
-    fn default() -> Self {
-        default_rocksdb()
     }
 }
 
@@ -686,22 +676,6 @@ impl MqttSlowSubscribeConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct PProf {
-    #[serde(default)]
-    pub enable: bool,
-    #[serde(default = "default_pprof_port")]
-    pub port: u16,
-    #[serde(default = "default_pprof_frequency")]
-    pub frequency: i32,
-}
-
-impl Default for PProf {
-    fn default() -> Self {
-        default_pprof()
-    }
-}
-
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub enum SchemaStrategy {
     #[default]
@@ -741,11 +715,41 @@ impl Default for StorageRuntime {
     }
 }
 
-#[derive(Default, Debug, Deserialize, Serialize, Clone)]
-pub struct KafkaRuntime {}
+fn default_kafka_tcp_port() -> u32 {
+    9092
+}
 
-#[derive(Default, Debug, Deserialize, Serialize, Clone)]
-pub struct AmqpRuntime {}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct KafkaRuntime {
+    #[serde(default = "default_kafka_tcp_port")]
+    pub tcp_port: u32,
+}
+
+impl Default for KafkaRuntime {
+    fn default() -> Self {
+        KafkaRuntime {
+            tcp_port: default_kafka_tcp_port(),
+        }
+    }
+}
+
+fn default_amqp_tcp_port() -> u32 {
+    5672
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AmqpRuntime {
+    #[serde(default = "default_amqp_tcp_port")]
+    pub tcp_port: u32,
+}
+
+impl Default for AmqpRuntime {
+    fn default() -> Self {
+        AmqpRuntime {
+            tcp_port: default_amqp_tcp_port(),
+        }
+    }
+}
 
 fn default_nats_tcp_port() -> u32 {
     4222
@@ -833,7 +837,7 @@ pub struct NatsRuntime {
     pub push_queue_thread_num: usize,
     /// Default TTL in seconds for MQ9 mailboxes when the client does not specify one.
     #[serde(default = "default_nats_mq9_mailbox_ttl")]
-    pub mq9_mailbox_ttl: u64,
+    pub mq9_mailbox_default_ttl: u64,
 }
 
 impl Default for NatsRuntime {
@@ -851,7 +855,54 @@ impl Default for NatsRuntime {
             core_shard_num: default_nats_core_shard_num(),
             push_thread_num: default_nats_push_thread_num(),
             push_queue_thread_num: default_nats_push_queue_thread_num(),
-            mq9_mailbox_ttl: default_nats_mq9_mailbox_ttl(),
+            mq9_mailbox_default_ttl: default_nats_mq9_mailbox_ttl(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AdminConfig {
+    /// Admin username for Dashboard / CLI login. Defaults to "admin".
+    #[serde(default = "default_admin_username")]
+    pub username: String,
+
+    /// Admin password (plain-text in config; should be changed in production).
+    #[serde(default = "default_admin_password")]
+    pub password: String,
+
+    /// HMAC-SHA256 secret used to sign JWT tokens.
+    /// Change this to a random string in production.
+    #[serde(default = "default_admin_jwt_secret")]
+    pub jwt_secret: String,
+
+    /// JWT token validity in hours. Defaults to 8.
+    #[serde(default = "default_admin_token_ttl_hours")]
+    pub token_ttl_hours: u64,
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+fn default_admin_password() -> String {
+    "admin".to_string()
+}
+
+fn default_admin_jwt_secret() -> String {
+    "robustmq-change-me-in-production".to_string()
+}
+
+fn default_admin_token_ttl_hours() -> u64 {
+    8
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            username: default_admin_username(),
+            password: default_admin_password(),
+            jwt_secret: default_admin_jwt_secret(),
+            token_ttl_hours: default_admin_token_ttl_hours(),
         }
     }
 }

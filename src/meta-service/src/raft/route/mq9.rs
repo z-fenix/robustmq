@@ -13,13 +13,18 @@
 // limitations under the License.
 
 use crate::core::error::MetaServiceError;
-use crate::storage::mq9::email::Mq9EmailStorage;
+use crate::storage::mq9::agent::Mq9AgentStorage;
+use crate::storage::mq9::mail::Mq9MailStorage;
 use bytes::Bytes;
-use metadata_struct::mq9::email::MQ9Email;
+use metadata_struct::mq9::agent::MQ9Agent;
+use metadata_struct::mq9::mail::MQ9Mail;
 use prost::Message as _;
-use protocol::meta::meta_service_mq9::{CreateEmailRequest, DeleteEmailRequest};
+use protocol::meta::meta_service_mq9::{
+    CreateAgentRequest, CreateMailRequest, DeleteAgentRequest, DeleteMailRequest,
+};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct DataRouteMq9 {
@@ -33,18 +38,66 @@ impl DataRouteMq9 {
         }
     }
 
-    pub fn create_email(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let req = CreateEmailRequest::decode(value.as_ref())?;
-        let email = MQ9Email::decode(&req.content)?;
-        let storage = Mq9EmailStorage::new(self.rocksdb_engine_handler.clone());
-        storage.save(&email)?;
+    pub fn create_mail(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = CreateMailRequest::decode(value.as_ref())?;
+        let mail = MQ9Mail::decode(&req.content)?;
+        let storage = Mq9MailStorage::new(self.rocksdb_engine_handler.clone());
+        storage.save(&mail)?;
         Ok(())
     }
 
-    pub fn delete_email(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let req = DeleteEmailRequest::decode(value.as_ref())?;
-        let storage = Mq9EmailStorage::new(self.rocksdb_engine_handler.clone());
-        storage.delete(&req.tenant, &req.mail_id)?;
+    pub fn delete_mail(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = DeleteMailRequest::decode(value.as_ref())?;
+        let storage = Mq9MailStorage::new(self.rocksdb_engine_handler.clone());
+        storage.delete(&req.tenant, &req.mail_address)?;
+        Ok(())
+    }
+
+    pub fn create_agent(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = CreateAgentRequest::decode(value.as_ref())?;
+        let agent = MQ9Agent::decode(&req.content)?;
+        let storage = Mq9AgentStorage::new(self.rocksdb_engine_handler.clone());
+        storage.save(&agent)?;
+
+        let tenant = agent.tenant.clone();
+        let agent_info = agent.agent_info.clone();
+        tokio::spawn(async move {
+            if let Ok(card) = serde_json::from_str(&agent_info) {
+                let text = search_engine::agent::embed_text(&card);
+                match llm_engine::embedding::fastembed::embed(&text).await {
+                    Ok(vector) => {
+                        if let Err(e) = search_engine::agent::register_agent(
+                            &tenant,
+                            &card,
+                            &agent_info,
+                            vector,
+                        )
+                        .await
+                        {
+                            warn!("agent vector index register failed: {e}");
+                        }
+                    }
+                    Err(e) => warn!("agent embed failed: {e}"),
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn delete_agent(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = DeleteAgentRequest::decode(value.as_ref())?;
+        let storage = Mq9AgentStorage::new(self.rocksdb_engine_handler.clone());
+        storage.delete(&req.tenant, &req.name)?;
+
+        let tenant = req.tenant.clone();
+        let name = req.name.clone();
+        tokio::spawn(async move {
+            if let Err(e) = search_engine::agent::unregister_agent(&tenant, &name).await {
+                warn!("agent vector index unregister failed: {e}");
+            }
+        });
+
         Ok(())
     }
 }

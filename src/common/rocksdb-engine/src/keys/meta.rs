@@ -156,21 +156,41 @@ pub fn storage_key_mqtt_last_will_prefix() -> String {
 }
 
 #[inline]
-pub fn storage_key_mqtt_group_leader(tenant: &str, group_name: &str) -> String {
+pub fn storage_key_share_group(tenant: &str, group_name: &str) -> String {
     format!(
-        "{}mqtt/sub_group_leader/{}/{}",
+        "{}cluster/share_group/{}/{}",
         PREFIX_META, tenant, group_name
     )
 }
 
 #[inline]
-pub fn storage_key_mqtt_group_leader_tenant_prefix(tenant: &str) -> String {
-    format!("{}mqtt/sub_group_leader/{}/", PREFIX_META, tenant)
+pub fn storage_key_share_group_tenant_prefix(tenant: &str) -> String {
+    format!("{}cluster/share_group/{}/", PREFIX_META, tenant)
 }
 
 #[inline]
-pub fn storage_key_mqtt_group_leader_prefix() -> String {
-    format!("{}mqtt/sub_group_leader/", PREFIX_META)
+pub fn storage_key_share_group_prefix() -> String {
+    format!("{}cluster/share_group/", PREFIX_META)
+}
+
+#[inline]
+pub fn storage_key_share_group_member_all_prefix() -> String {
+    format!("{}cluster/share_group_member/", PREFIX_META)
+}
+
+pub fn storage_key_share_group_member(broker_id: u64, connect_id: u64, sid: &str) -> String {
+    format!(
+        "{}cluster/share_group_member/{}/{}/{}",
+        PREFIX_META, broker_id, connect_id, sid
+    )
+}
+
+#[inline]
+pub fn storage_key_share_group_member_prefix(broker_id: u64, connect_id: u64) -> String {
+    format!(
+        "{}cluster/share_group_member/{}/{}/",
+        PREFIX_META, broker_id, connect_id
+    )
 }
 
 #[inline]
@@ -328,16 +348,16 @@ pub fn storage_key_mqtt_retain_message_prefix() -> String {
 }
 
 #[inline]
-pub fn storage_key_nats_subscribe(tenant: &str, connect_id: u64, sid: &str) -> String {
+pub fn storage_key_nats_subscribe(broker_id: u64, connect_id: u64, sid: &str) -> String {
     format!(
         "{}nats/subscribe/{}/{}/{}",
-        PREFIX_META, tenant, connect_id, sid
+        PREFIX_META, broker_id, connect_id, sid
     )
 }
 
 #[inline]
-pub fn storage_key_nats_subscribe_tenant_prefix(tenant: &str) -> String {
-    format!("{}nats/subscribe/{}/", PREFIX_META, tenant)
+pub fn storage_key_nats_subscribe_broker_prefix(broker_id: u64) -> String {
+    format!("{}nats/subscribe/{}/", PREFIX_META, broker_id)
 }
 
 #[inline]
@@ -346,18 +366,33 @@ pub fn storage_key_nats_subscribe_prefix() -> String {
 }
 
 #[inline]
-pub fn storage_key_mq9_email(tenant: &str, mail_id: &str) -> String {
-    format!("{}mq9/email/{}/{}", PREFIX_META, tenant, mail_id)
+pub fn storage_key_mq9_mail(tenant: &str, mail_address: &str) -> String {
+    format!("{}mq9/mail/{}/{}", PREFIX_META, tenant, mail_address)
 }
 
 #[inline]
-pub fn storage_key_mq9_email_tenant_prefix(tenant: &str) -> String {
-    format!("{}mq9/email/{}/", PREFIX_META, tenant)
+pub fn storage_key_mq9_mail_tenant_prefix(tenant: &str) -> String {
+    format!("{}mq9/mail/{}/", PREFIX_META, tenant)
 }
 
 #[inline]
-pub fn storage_key_mq9_email_prefix() -> String {
-    format!("{}mq9/email/", PREFIX_META)
+pub fn storage_key_mq9_mail_prefix() -> String {
+    format!("{}mq9/mail/", PREFIX_META)
+}
+
+#[inline]
+pub fn storage_key_mq9_agent(tenant: &str, name: &str) -> String {
+    format!("{}mq9/agent/{}/{}", PREFIX_META, tenant, name)
+}
+
+#[inline]
+pub fn storage_key_mq9_agent_tenant_prefix(tenant: &str) -> String {
+    format!("{}mq9/agent/{}/", PREFIX_META, tenant)
+}
+
+#[inline]
+pub fn storage_key_mq9_agent_prefix() -> String {
+    format!("{}mq9/agent/", PREFIX_META)
 }
 
 #[inline]

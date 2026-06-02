@@ -21,7 +21,7 @@ use super::{
     message::build_message_expire,
 };
 use crate::{
-    core::{qos::save_temporary_qos2_message, retain::RetainMessageManager},
+    core::{qos::save_temporary_qos2_message, retain::save_retain_message},
     storage::message::MessageStorage,
     subscribe::manager::SubscribeManager,
 };
@@ -59,7 +59,6 @@ pub struct SaveMessageContext {
     pub publish: Publish,
     pub publish_properties: Option<PublishProperties>,
     pub subscribe_manager: Arc<SubscribeManager>,
-    pub retain_message_manager: Arc<RetainMessageManager>,
     pub client_id: String,
     pub topic: Topic,
     pub delay_info: Option<DelayPublishTopic>,
@@ -68,15 +67,15 @@ pub struct SaveMessageContext {
 pub async fn save_message(context: SaveMessageContext) -> Result<Option<String>, MqttBrokerError> {
     // Whether or not offline messages are enabled
     // persistent storage must be used to retain the messages.
-    context
-        .retain_message_manager
-        .save_retain_message(
-            &context.topic.tenant,
-            &context.topic.topic_name,
-            &context.publish,
-            &context.publish_properties,
-        )
-        .await?;
+    save_retain_message(
+        &context.storage_driver_manager,
+        &context.cache_manager,
+        &context.topic.tenant,
+        &context.topic.topic_name,
+        &context.publish,
+        &context.publish_properties,
+    )
+    .await?;
 
     // offline message
     let offline_message_disabled = !context
@@ -97,19 +96,20 @@ pub async fn save_message(context: SaveMessageContext) -> Result<Option<String>,
     }
 
     // save delay message
-    if context.delay_info.is_some() {
+    if let Some(delay_info) = &context.delay_info {
         return save_delay_message(
             &context.delay_message_manager,
             &context.topic.tenant,
             &context.publish.payload,
-            context.delay_info.as_ref().unwrap(),
+            delay_info,
         )
         .await;
     }
 
     // save message
+    let message_expire =
+        build_message_expire(&context.cache_manager, &context.publish_properties).await;
     let mqtt_data = build_mqtt_protocol_data(
-        &context.cache_manager,
         &context.client_id,
         &context.publish,
         &context.publish_properties,
@@ -124,7 +124,8 @@ pub async fn save_message(context: SaveMessageContext) -> Result<Option<String>,
         mqtt: Some(mqtt_data),
         nats: None,
         mq9: None,
-    }));
+    }))
+    .with_expire_at(message_expire);
 
     save_simple_message(
         &context.storage_driver_manager,
@@ -164,13 +165,10 @@ async fn save_simple_message(
 }
 
 pub async fn build_mqtt_protocol_data(
-    cache_manager: &Arc<MQTTCacheManager>,
     client_id: &str,
     publish: &Publish,
     publish_properties: &Option<PublishProperties>,
 ) -> StorageRecordProtocolDataMqtt {
-    let message_expire = build_message_expire(cache_manager, publish_properties).await;
-
     if let Some(properties) = publish_properties {
         StorageRecordProtocolDataMqtt {
             client_id: client_id.to_string(),
@@ -179,7 +177,6 @@ pub async fn build_mqtt_protocol_data(
             response_topic: properties.response_topic.clone(),
             correlation_data: properties.correlation_data.clone(),
             content_type: properties.content_type.clone(),
-            expire_at: message_expire,
             user_properties: properties.user_properties.clone(),
         }
     } else {

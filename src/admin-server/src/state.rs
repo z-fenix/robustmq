@@ -19,11 +19,14 @@ use common_security::manager::SecurityManager;
 use connector::manager::ConnectorManager;
 use grpc_clients::pool::ClientPool;
 use mqtt_broker::{
-    core::{cache::MQTTCacheManager, retain::RetainMessageManager},
+    core::cache::MQTTCacheManager,
     subscribe::{manager::SubscribeManager, PushManager},
 };
 use nats_broker::core::cache::NatsCacheManager;
+use nats_broker::push::manager::NatsSubscribeManager;
 use network_server::common::connection_manager::ConnectionManager;
+#[cfg(not(windows))]
+use pprof::ProfilerGuard;
 use rate_limit::global::GlobalRateLimiterManager;
 use rocksdb_engine::{metrics::mqtt::MQTTMetricsCache, rocksdb::RocksDBEngine};
 use schema_register::schema::SchemaRegisterManager;
@@ -40,15 +43,16 @@ pub struct HttpState {
     pub engine_context: StorageEngineContext,
     pub storage_driver_manager: Arc<StorageDriverManager>,
     pub rate_limiter: Arc<GlobalRateLimiterManager>,
-    /// Present only when the nats-broker is co-started with admin-server.
     pub nats_context: Option<NatsContext>,
+    #[cfg(not(windows))]
+    pub pprof_guard: Option<Arc<ProfilerGuard<'static>>>,
 }
 
-/// Context carrying nats-broker runtime state.
-/// Injected into HttpState only when the nats-broker is running alongside admin-server.
 #[derive(Clone)]
 pub struct NatsContext {
     pub cache_manager: Arc<NatsCacheManager>,
+    pub subscribe_manager: Arc<NatsSubscribeManager>,
+    pub nats_tcp_port: u32,
 }
 
 #[derive(Clone)]
@@ -59,7 +63,6 @@ pub struct MQTTContext {
     pub metrics_manager: Arc<MQTTMetricsCache>,
     pub connector_manager: Arc<ConnectorManager>,
     pub schema_manager: Arc<SchemaRegisterManager>,
-    pub retain_message_manager: Arc<RetainMessageManager>,
     pub push_manager: Arc<PushManager>,
     pub storage_driver_manager: Arc<StorageDriverManager>,
 }

@@ -94,7 +94,6 @@ impl GroupConsumer {
             .driver
             .read_by_offset(tenant, topic_name, &shard_offsets, read_config)
             .await?;
-
         self.after_read(tenant, topic_name, records).await
     }
 
@@ -151,6 +150,28 @@ impl GroupConsumer {
         self.pending_offsets.clear();
 
         Ok(())
+    }
+
+    /// Stage a single shard offset directly into pending_offsets.
+    ///
+    /// Useful when the caller knows the exact target offset (e.g. ACK with msg_id,
+    /// force-deliver reset) and wants to use the normal `commit()` path without
+    /// going through a read cycle.
+    pub fn stage_shard_offset(&self, tenant: &str, topic: &str, shard: &str, offset: u64) {
+        self.pending_offsets
+            .insert(OffsetKey::new(tenant, topic, shard), offset);
+    }
+
+    pub fn set_current_offsets(
+        &self,
+        tenant: &str,
+        topic: &str,
+        shard_offsets: &HashMap<String, u64>,
+    ) {
+        for (shard, &offset) in shard_offsets {
+            self.current_offsets
+                .insert(OffsetKey::new(tenant, topic, shard), offset);
+        }
     }
 
     /// Merge pending offsets into current_offsets without persisting to the offset store.
@@ -296,17 +317,18 @@ impl GroupConsumer {
                 Ok(offsets)
             }
             StartOffsetStrategy::ByStartTime(timestamp) => {
-                let adapter_strategy = AdapterOffsetStrategy::Latest;
+                let adapter_strategy = AdapterOffsetStrategy::Earliest;
                 let target = self
                     .driver
                     .get_offset_by_timestamp(tenant, topic_name, timestamp, adapter_strategy)
                     .await?;
+                // No `.min(end_offset)` clamp: read_by_tag filters tag entries by offset itself,
+                // and clamping target to end_offset would pin the consumer to the last record
+                // when get_offset_by_timestamp falls back to a value past the shard end.
                 let offsets = storage_list
                     .into_values()
                     .map(|detail| {
-                        let offset = target
-                            .max(detail.offset.start_offset)
-                            .min(detail.offset.end_offset);
+                        let offset = target.max(detail.offset.start_offset);
                         (detail.shard_name, offset)
                     })
                     .collect();

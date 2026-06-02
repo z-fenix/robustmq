@@ -14,7 +14,9 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod email;
+pub mod agent;
+pub mod forward_rule;
+pub mod mail;
 
 /// Priority levels for mailbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

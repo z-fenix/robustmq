@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::auth::{auth_middleware, auth_router};
 use crate::cluster::index;
 use crate::cluster::offset::{commit_offset, get_offset_by_group, get_offset_by_timestamp};
+use crate::debug::pprof_flamegraph;
 use crate::engine::segment::segment_list;
 use crate::engine::shard::{shard_create, shard_delete, shard_list};
 use crate::mcp::mcp_route;
@@ -29,10 +31,12 @@ use crate::{
             schema_bind_create, schema_bind_delete, schema_bind_list, schema_create, schema_delete,
             schema_list,
         },
+        share_group::{share_group_detail, share_group_list},
         tenant::{tenant_create, tenant_delete, tenant_list, tenant_update},
         topic::{topic_create, topic_delete, topic_detail, topic_list},
         user::{user_create, user_delete, user_list},
     },
+    mq9::{agent::agent_list, mail::mail_list},
     mqtt::{
         client::client_list,
         monitor::monitor_data,
@@ -45,7 +49,6 @@ use crate::{
         system::{ban_log_list, flapping_detect_list, system_alarm_list},
         topic_rewrite::{topic_rewrite_create, topic_rewrite_delete, topic_rewrite_list},
     },
-    nats::mail::mail_list,
     path::*,
     state::HttpState,
 };
@@ -58,6 +61,7 @@ use axum::{
     routing::post,
     Router,
 };
+use common_metrics::core::server::dump_metrics;
 use common_metrics::http::record_http_request;
 use std::path::PathBuf;
 use std::{net::SocketAddr, sync::Arc, time::Instant};
@@ -79,31 +83,40 @@ impl AdminServer {
         AdminServer {}
     }
 
-    pub async fn start(&self, port: u32, state: Arc<HttpState>) {
+    pub async fn start(&self, port: u32, state: Arc<HttpState>) -> Result<(), std::io::Error> {
         let ip = format!("0.0.0.0:{port}");
+        let protected_api = self.api_route().layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+        // Note: `/` is intentionally not registered here — it is left to the
+        // static fallback so the SPA's index.html (login page) is served.
+        // The cluster info JSON previously exposed on `/` is still available
+        // at `/api/info`.
         let route = Router::new()
-            .merge(self.static_route())
-            .nest("/api", self.api_route())
             .merge(mcp_route())
+            .route(DEBUG_PPROF_FLAMEGRAPH_PATH, get(pprof_flamegraph))
+            .route(METRICS_PATH, get(|| async { dump_metrics() }))
+            .merge(auth_router())
+            .nest("/api", protected_api)
+            .merge(self.static_route())
             .with_state(state.clone())
             .layer(middleware::from_fn_with_state(state, rate_limit_middleware))
             .layer(middleware::from_fn(base_middleware))
             .layer(CorsLayer::permissive());
 
-        let listener = tokio::net::TcpListener::bind(&ip).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(&ip).await?;
         info!(
             "Admin HTTP Server started successfully, listening port: {}, access logging and CORS enabled",
             port
         );
 
-        if let Err(e) = axum::serve(
+        axum::serve(
             listener,
             route.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        {
-            panic!("{}", e.to_string());
-        }
     }
 
     fn static_route(&self) -> Router<Arc<HttpState>> {
@@ -137,7 +150,7 @@ impl AdminServer {
             .route(TENANT_CREATE_PATH, post(tenant_create))
             .route(TENANT_UPDATE_PATH, post(tenant_update))
             .route(TENANT_DELETE_PATH, post(tenant_delete))
-            .route("/", get(index))
+            .route(CLUSTER_INFO, get(index))
     }
 
     fn engine_route(&self) -> Router<Arc<HttpState>> {
@@ -191,6 +204,9 @@ impl AdminServer {
             .route(CLUSTER_USER_LIST_PATH, get(user_list))
             .route(CLUSTER_USER_CREATE_PATH, post(user_create))
             .route(CLUSTER_USER_DELETE_PATH, post(user_delete))
+            // share-group
+            .route(CLUSTER_SHARE_GROUP_LIST_PATH, get(share_group_list))
+            .route(CLUSTER_SHARE_GROUP_DETAIL_PATH, get(share_group_detail))
             // offset
             .route(
                 CLUSTER_OFFSET_BY_TIMESTAMP_PATH,
@@ -230,7 +246,9 @@ impl AdminServer {
     }
 
     fn mq9_route(&self) -> Router<Arc<HttpState>> {
-        Router::new().route(MQ9_MAIL_LIST_PATH, get(mail_list))
+        Router::new()
+            .route(MQ9_MAIL_LIST_PATH, get(mail_list))
+            .route(MQ9_AGENT_LIST_PATH, get(agent_list))
     }
 
     fn kafka_route(&self) -> Router<Arc<HttpState>> {
@@ -458,7 +476,7 @@ mod tests {
         use axum::http::HeaderMap;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 58080);
 
         // Test with no headers
         let headers = HeaderMap::new();

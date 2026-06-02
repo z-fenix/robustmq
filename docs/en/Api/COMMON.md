@@ -4,7 +4,7 @@
 
 RobustMQ Admin Server is an HTTP management interface service, providing comprehensive management capabilities for RobustMQ clusters.
 
-- **Base URL**: `http://localhost:8080`
+- **Base URL**: `http://localhost:58080`
 - **API Prefix**: `/api` (all management interfaces use this prefix)
 - **Request Method**: Use `GET` for list/detail queries, `POST` for create/delete operations
 - **Data Format**: JSON
@@ -12,6 +12,7 @@ RobustMQ Admin Server is an HTTP management interface service, providing compreh
 
 ## API Documentation Navigation
 
+- 🔐 **[Authentication](AUTH.md)** - Login endpoint, JWT token usage and configuration
 - 📋 **[Cluster Management API](CLUSTER.md)** - Cluster configuration and status management
 - 🔧 **[MQTT Broker API](MQTT.md)** - All MQTT broker related management interfaces
 - 🔌 **[Connector API](Connector.md)** - Connector management interfaces
@@ -179,7 +180,7 @@ Most list query interfaces support the following common parameters:
 ### Cluster Status Query
 - **Endpoint**: `GET /api/status`
 - **Description**: Get complete cluster status information, including RobustMQ version, cluster name, start time, broker node list, and Meta cluster Raft state
-- **Request Parameters**: 
+- **Request Parameters**:
 ```json
 {}
 ```
@@ -353,13 +354,13 @@ The `meta` field contains the Raft consensus state information of the Meta clust
 ### Basic Request Example
 ```bash
 # Get service version
-curl -X GET http://localhost:8080/
+curl -X GET http://localhost:58080/
 
 # Get cluster status
-curl -X GET http://localhost:8080/api/status
+curl -X GET http://localhost:58080/api/status
 
 # List query with pagination
-curl "http://localhost:8080/api/cluster/user/list?limit=10&page=1&sort_field=username&sort_by=asc"
+curl "http://localhost:58080/api/cluster/user/list?limit=10&page=1&sort_field=username&sort_by=asc"
 ```
 
 ### Error Handling Example
@@ -405,7 +406,7 @@ cargo run --bin admin-server
 ### Test Connection
 ```bash
 # Test if service is running normally
-curl -X GET http://localhost:8080/
+curl -X GET http://localhost:58080/
 ```
 
 ### Log Viewing
@@ -416,4 +417,4 @@ The service outputs detailed log information during runtime, including:
 
 ---
 
-*Last Updated: 2026-03-21*
+Last Updated: 2026-03-21

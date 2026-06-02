@@ -162,6 +162,7 @@ mod tests {
                 tags: Some(vec![format!("tag-{}", i)]),
                 value: Bytes::from(format!("data-{i}")),
                 protocol_data: None,
+                expire_at: 0,
             });
         }
 
@@ -204,10 +205,8 @@ mod tests {
 
         assert_eq!(resp.len(), 2);
 
-        let mut i = 5;
-        for row in resp {
+        for (i, row) in (5..).zip(resp) {
             assert_eq!(row.record.metadata.key.unwrap(), format!("key-{}", i));
-            i += 1;
         }
 
         let max_record = 5;
@@ -223,10 +222,8 @@ mod tests {
         .unwrap();
         assert_eq!(resp.len(), 5);
 
-        let mut i: i32 = 10;
-        for row in resp {
+        for (i, row) in (10_i32..).zip(resp) {
             assert_eq!(row.record.metadata.key.unwrap(), format!("key-{}", i));
-            i += 1;
         }
     }
 

@@ -25,6 +25,9 @@ src/storage-engine/data/
 src/delay-message/data/
 src/mqtt-broker/data/
 src/connector/data
+src/common/llm-engine/.fastembed_cache
+.fastembed_cache
+src/common/search-engine/data
 
 # Test data and temporary files
 /target/tmp/
@@ -182,6 +185,20 @@ vgcore.*
 # core.*
 
 # ====================
+# Python
+# ====================
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+precommit_venv/
+
+# ====================
+# Claude Code Worktrees
+# ====================
+.claude/worktrees/
+
+# ====================
 # CI/CD & Deployment
 # ====================
 # Kubernetes local configs
@@ -207,3 +224,6 @@ src/common/rocksdb-engine/data
 src/storage-adapter/data
 src/storage-adapter/robustmq_data
 tests/data
+
+# Planning / task files
+plan/

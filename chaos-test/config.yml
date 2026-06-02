@@ -1,0 +1,78 @@
+# Copyright 2023 RobustMQ Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+cluster:
+  binary: "bin/broker-server"   # relative to project_root, or absolute path
+  project_root: "/root/test-agent/robustmq"
+  mode: single                  # single | multi
+  single:
+    config: "config/server.toml"
+    data_dir: "data"
+    mqtt_port: 1883
+    http_port: 58080            # broker HTTP admin/metrics port (server.toml http_port)
+  multi:
+    nodes:
+      - config: "config/cluster/server-1.toml"
+        data_dir: "data/broker-1"
+        mqtt_port: 1883
+        http_port: 58080
+      - config: "config/cluster/server-2.toml"
+        data_dir: "data/broker-2"
+        mqtt_port: 2883
+        http_port: 58082
+      - config: "config/cluster/server-3.toml"
+        data_dir: "data/broker-3"
+        mqtt_port: 3883
+        http_port: 58083
+
+mqtt:
+  username: "admin"             # must match server.toml [mqtt_runtime] default_user
+  password: "robustmq"         # must match server.toml [mqtt_runtime] default_password
+
+chaosd:
+  endpoint: "http://127.0.0.1:31767"
+
+observability:
+  log_pattern: "server.*.log"   # log filename pattern in data_dir/logs/
+  metrics_path: "/metrics"       # HTTP metrics endpoint path
+
+sdk_matrix:
+  p0:
+    - sdk: python
+      version: "3.11"
+      scenarios: [basic-pubsub]
+    - sdk: go
+      version: "1.21"
+      scenarios: [basic-pubsub]
+  p1:
+    - sdk: python
+      versions: ["3.10", "3.11", "3.12"]
+      scenarios: [basic-pubsub, failover]
+    - sdk: rust
+      version: "1.70"
+      scenarios: [basic-pubsub, failover]
+  p2:
+    - sdk: python
+      versions: ["3.10", "3.11", "3.12"]
+    - sdk: go
+      versions: ["1.20", "1.21"]
+    - sdk: rust
+      versions: ["1.70", "1.75"]
+    - sdk: java
+      versions: ["11", "17", "21"]
+
+github:
+  reports_repo: "git@github.com:<your-org>/test-reports.git"
+  deploy_key_path: "~/.ssh/test-reports-deploy"
+  branch: "main"

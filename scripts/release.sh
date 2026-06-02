@@ -119,15 +119,15 @@ extract_version_from_cargo() {
 
     # Try multiple methods to extract version
     local version=""
-    
+
     # Method 1: Look for workspace.package version
     version=$(grep -A 10 "^\[workspace\.package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-    
+
     # Method 2: Look for regular package version if workspace version not found
     if [ -z "$version" ]; then
         version=$(grep -A 10 "^\[package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
     fi
-    
+
     # Method 3: Simple fallback
     if [ -z "$version" ]; then
         version=$(grep "^version\s*=" "$cargo_file" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
@@ -179,6 +179,9 @@ detect_current_platform() {
             ;;
         Linux)
             os_type="linux"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            os_type="windows"
             ;;
         *)
             log_error "Unsupported OS: $(uname -s)"
@@ -261,7 +264,7 @@ check_release_exists() {
 generate_custom_release_notes() {
     local version="$1"
     local build_date=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S CST')
-    
+
     cat << EOF
 ## 🚀 RobustMQ $version
 
@@ -275,6 +278,7 @@ This release includes pre-built binaries for multiple platforms:
 - **Linux ARM64** (\`robustmq-${version}-linux-arm64.tar.gz\`)
 - **macOS AMD64** (\`robustmq-${version}-darwin-amd64.tar.gz\`)
 - **macOS ARM64** (\`robustmq-${version}-darwin-arm64.tar.gz\`)
+- **Windows AMD64** (\`robustmq-${version}-windows-amd64.tar.gz\`)
 
 > **Note**: Platform-specific packages are uploaded incrementally. If your platform is not yet available, please check back shortly.
 
@@ -321,7 +325,7 @@ This release includes pre-built binaries for multiple platforms:
 
 **Access Web UI** (if frontend is included):
 \`\`\`
-http://localhost:8080
+http://localhost:58080
 \`\`\`
 
 **Management Tools**:
@@ -383,7 +387,7 @@ create_github_release() {
 
     # Generate custom release notes (installation guide, etc.)
     local custom_notes=$(generate_custom_release_notes "$version")
-    
+
     # Escape the body for JSON
     local escaped_body=$(echo "$custom_notes" | jq -Rs .)
 
@@ -567,9 +571,11 @@ upload_package() {
             log_error "Check your GITHUB_TOKEN permissions."
             return 1
         elif [ "$http_code" -eq 404 ]; then
+            # When multiple matrix jobs upload to a release that was just created,
+            # GitHub's upload endpoint may briefly return 404 while the release
+            # propagates internally. Treat it as transient and retry.
             last_error="Release not found (HTTP 404)"
-            log_error "$last_error: $(echo "$response_body" | jq -r '.message // .error // "Unknown error"' 2>/dev/null || echo "$response_body")"
-            return 1
+            log_warning "$last_error: $(echo "$response_body" | jq -r '.message // .error // "Unknown error"' 2>/dev/null || echo "$response_body") — likely upload endpoint not yet synced, retrying..."
         elif [ "$http_code" -ge 400 ] && [ "$http_code" -lt 500 ]; then
             # Other 4xx errors: retry a limited number of times in case of transient issues
             last_error="Client error (HTTP $http_code)"

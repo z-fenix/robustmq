@@ -38,7 +38,7 @@ pub fn protocol_versions() -> Vec<u32> {
 }
 
 pub async fn create_test_env() -> AdminHttpClient {
-    AdminHttpClient::new("http://127.0.0.1:8080")
+    AdminHttpClient::new("http://127.0.0.1:58080")
 }
 
 pub async fn session_list_by_admin(client_id: &str) -> PageReplyData<Vec<SessionListRow>> {
@@ -449,8 +449,8 @@ pub fn build_v5_conn_pros(
         .user_name(uname)
         .password(password);
 
-    if client_test_properties.will.is_some() {
-        conn_opts.will_message(client_test_properties.will.unwrap());
+    if let Some(will) = client_test_properties.will {
+        conn_opts.will_message(will);
     }
     conn_opts.finalize()
 }

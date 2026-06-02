@@ -63,45 +63,26 @@ MQTT publish  →  RobustMQ unified storage  →  Kafka consume
 | **AMQP** | Enterprise messaging, RabbitMQ migration |
 | **mq9** | AI Agent async communication |
 
-## 🤖 mq9 — Agent Mailbox for AI
+## 🤖 mq9 — Communication Infrastructure for Multi-Agent Systems
 
-**mq9** is RobustMQ's communication layer designed for AI Agents. Just like people have email — you send a message, the recipient reads it when they're available — Agents need the same. Today, when Agent A sends a message to Agent B and B is offline, the message is gone. Every team works around this with Redis pub/sub, database polling, or homegrown queues.
+**mq9** is the infrastructure layer for multi-agent systems, built as RobustMQ's fifth native protocol. It solves the two foundational problems every multi-agent system faces: how Agents find each other, and how they communicate reliably and asynchronously.
 
-mq9 solves it directly: **send a message, the recipient gets it when they come online.**
+Unlike general-purpose registries (etcd, Consul) combined with general-purpose queues (Kafka, NATS), mq9 is designed specifically for Agent communication. It provides an AgentCard data model, capability-based semantic discovery, per-Agent persistent mailboxes, N-to-N Agent topology, and long-task state retention — all in a single broker with shared runtime, storage, network, and cluster coordination.
 
-<div align="center">
+mq9 natively supports the **A2A (Agent-to-Agent)** protocol via the `mq9.a2a` SDK facade, wrapping the official a2a-sdk so developers can build a fully compliant A2A Agent in 15 lines of code. Native protocol access and forward compatibility with MCP and ANP are also supported.
 
-| Operation | Subject | What it does |
-|-----------|---------|-------------|
-| **MAILBOX.CREATE** | `$mq9.AI.MAILBOX.CREATE` | Create a private or public mailbox |
-| **Send** | `$mq9.AI.MAILBOX.MSG.{mail_id}` / `.urgent` / `.critical` | Deliver a message — three levels: `critical` / `urgent` / `normal` (default, no suffix) |
-| **Subscribe** | `$mq9.AI.MAILBOX.MSG.{mail_id}.*` | Receive all priorities; new arrivals pushed in real time |
-| **Discover** | `$mq9.AI.PUBLIC.LIST` | Discover all public mailboxes |
+**Two problems, one broker:**
 
-</div>
+| Problem | mq9's answer |
+|---------|-------------|
+| How do Agents find each other? | Built-in registry: `AGENT.REGISTER` + `AGENT.DISCOVER` with full-text and semantic vector search |
+| How do Agents communicate reliably? | Persistent mailbox per Agent: messages wait until the recipient comes online, with 3-tier priority (critical / urgent / normal) and FETCH+ACK pull consumption |
 
-```bash
-# Create a private mailbox — returns mail_id
-nats req '$mq9.AI.MAILBOX.CREATE' '{"ttl":3600}'
-# → {"mail_id":"mail-d7a5072lko83gp7amga0-d7a5072lko83gp7amgag","is_new":true}
+**Multiple integration paths:** the `mq9.a2a` SDK facade for A2A-standard Agents; native NATS client for any language; Python / Go / TypeScript / Java / Rust SDKs; `langchain-mq9` toolkit for LangChain and LangGraph; MCP Server for JSON-RPC 2.0 access.
 
-# Send to another Agent's mailbox (works even if they're offline)
-nats pub '$mq9.AI.MAILBOX.MSG.mail-d7a5072lko83gp7amga0-d7a5072lko83gp7amgag' \
-  '{"type":"task_result","payload":"done","ts":1234567890}'
+Deploy one RobustMQ instance — mq9 is ready. Designed to scale to millions of Agents.
 
-# Create a public mailbox (task queue), discoverable via PUBLIC.LIST
-nats req '$mq9.AI.MAILBOX.CREATE' '{"ttl":3600,"public":true,"name":"task.queue","desc":"Task queue"}'
-nats pub '$mq9.AI.MAILBOX.MSG.task.queue' '{"type":"data_analysis"}'
-
-# Subscribe to your mailbox — receives all non-expired messages immediately, in priority order
-nats sub '$mq9.AI.MAILBOX.MSG.mail-d7a5072lko83gp7amga0-d7a5072lko83gp7amgag.*'
-```
-
-**Multiple integration paths:** any NATS client connects directly; the RobustMQ SDK covers Go, Python, Rust, JavaScript, Java, and C#; the `langchain-mq9` toolkit plugs into LangChain and LangGraph; and an MCP Server provides JSON-RPC 2.0 access for tools like Dify.
-
-mq9 is RobustMQ's fifth native protocol, alongside MQTT, Kafka, NATS, and AMQP, built on the same unified storage layer. Deploy one RobustMQ instance — mq9 is ready.
-
-> 📖 [mq9 Documentation](https://robustmq.com/en/mq9/)
+> 📖 [mq9.robustmq.com](https://mq9.robustmq.com) · [GitHub](https://github.com/robustmq/mq9)
 
 ---
 
@@ -111,7 +92,7 @@ mq9 is RobustMQ's fifth native protocol, alongside MQTT, Kafka, NATS, and AMQP, 
   <video src="https://robustmq.com/assets/demo.zRXM786t.mp4" controls width="100%"></video>
 </div>
 
-- 🤖 **mq9 — AI Agent communication**: Agent mailboxes with persistent store-first delivery, three-level priority (critical / urgent / normal), TTL auto-cleanup, and public mailbox discovery — async Agent-to-Agent messaging, no simultaneous online required
+- 🤖 **mq9 — Multi-Agent infrastructure**: Agent registry with full-text and semantic discovery, per-Agent persistent mailbox, 3-tier priority (critical / urgent / normal), FETCH+ACK pull consumption — registry and reliable async messaging in one broker, native A2A protocol support
 - 🦀 **Rust-native**: No GC, stable and predictable memory footprint, no periodic spikes — consistent from edge devices to cloud clusters
 - 🗄️ **Unified storage layer**: All protocols share one storage engine — data written once, consumed by any protocol, no duplication
 - 🔌 **Native multi-protocol**: MQTT 3.1/3.1.1/5.0, Kafka, NATS, AMQP, mq9 — natively implemented, full protocol semantics
@@ -188,22 +169,36 @@ kafka-console-consumer.sh --bootstrap-server localhost:9092 \
 nats sub "robustmq.multi.protocol"
 ```
 
-### mq9 Agent Mailbox in Action
+### mq9 — Agent Communication in Action
 
 ```bash
-# Agent A creates a mailbox — returns mail_id
-nats req '$mq9.AI.MAILBOX.CREATE' '{"ttl":3600}'
+# Register an Agent with capability description
+nats request '$mq9.AI.AGENT.REGISTER' \
+  '{"name":"agent.translator","mailbox":"agent.translator","payload":"Multilingual translation; EN/ZH/JA/KO"}'
 
-# Agent B sends to Agent A (works even if A is offline)
-nats pub '$mq9.AI.MAILBOX.MSG.{mail_id_a}' '{"type":"task","payload":"hello","ts":1234567890}'
+# Discover Agents by semantic intent
+nats request '$mq9.AI.AGENT.DISCOVER' '{"semantic":"translate Chinese to English","limit":5}'
 
-# Agent A subscribes and receives all non-expired messages in priority order
-nats sub '$mq9.AI.MAILBOX.MSG.{mail_id_a}.*'
+# Create a mailbox (Agent's persistent address)
+nats request '$mq9.AI.MAILBOX.CREATE' '{"name":"agent.translator","ttl":3600}'
+
+# Send a message — persists even if recipient is offline
+nats request '$mq9.AI.MSG.SEND.agent.translator' \
+  --header 'mq9-priority:critical' \
+  '{"task":"translate","text":"Hello world","lang":"zh"}'
+
+# FETCH messages in priority order (critical → urgent → normal)
+nats request '$mq9.AI.MSG.FETCH.agent.translator' \
+  '{"group_name":"workers","deliver":"earliest"}'
+
+# ACK to advance consumer group offset
+nats request '$mq9.AI.MSG.ACK.agent.translator' \
+  '{"group_name":"workers","mail_address":"agent.translator","msg_id":1}'
 ```
 
 ### Web Dashboard
 
-Access `http://localhost:8080` for cluster monitoring and management.
+Access `http://localhost:58080` for cluster monitoring and management.
 
 <div align="center">
   <img src="docs/images/web-ui.jpg" alt="Web UI" width="45%" style="margin-right: 2%;">
@@ -213,7 +208,7 @@ Access `http://localhost:8080` for cluster monitoring and management.
 ### Try Online Demo
 
 - **MQTT Server**: `117.72.92.117:1883` (admin/robustmq)
-- **Web Dashboard**: http://demo.robustmq.com:8080
+- **Web Dashboard**: http://demo.robustmq.com:58080
 
 📚 **Full installation and usage guide: [Documentation](https://robustmq.com/)**
 

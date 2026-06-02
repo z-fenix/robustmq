@@ -14,20 +14,24 @@
 
 use protocol::meta::meta_service_common::meta_service_service_client::MetaServiceServiceClient;
 use protocol::meta::meta_service_common::{
-    AddLearnerReply, AddLearnerRequest, AppendReply, AppendRequest, BindSchemaReply,
-    BindSchemaRequest, ChangeMembershipReply, ChangeMembershipRequest, ClusterStatusReply,
-    ClusterStatusRequest, CreateSchemaReply, CreateSchemaRequest, CreateTenantReply,
-    CreateTenantRequest, DeleteReply, DeleteRequest, DeleteResourceConfigReply,
-    DeleteResourceConfigRequest, DeleteSchemaReply, DeleteSchemaRequest, DeleteTenantReply,
-    DeleteTenantRequest, ExistsReply, ExistsRequest, GetOffsetDataReply, GetOffsetDataRequest,
-    GetPrefixReply, GetPrefixRequest, GetReply, GetRequest, GetResourceConfigReply,
-    GetResourceConfigRequest, HeartbeatReply, HeartbeatRequest, ListBindSchemaReply,
-    ListBindSchemaRequest, ListSchemaReply, ListSchemaRequest, ListTenantReply, ListTenantRequest,
-    NodeListReply, NodeListRequest, RegisterNodeReply, RegisterNodeRequest, SaveOffsetDataReply,
-    SaveOffsetDataRequest, SetReply, SetRequest, SetResourceConfigReply, SetResourceConfigRequest,
-    SnapshotReply, SnapshotRequest, UnBindSchemaReply, UnBindSchemaRequest, UnRegisterNodeReply,
-    UnRegisterNodeRequest, UpdateSchemaReply, UpdateSchemaRequest, UpdateTenantReply,
-    UpdateTenantRequest, VoteReply, VoteRequest,
+    AddShareGroupMemberReply, AddShareGroupMemberRequest, AppendReply, AppendRequest,
+    BindSchemaReply, BindSchemaRequest, ClusterStatusReply, ClusterStatusRequest,
+    CreateSchemaReply, CreateSchemaRequest, CreateShareGroupReply, CreateShareGroupRequest,
+    CreateTenantReply, CreateTenantRequest, DeleteReply, DeleteRequest, DeleteResourceConfigReply,
+    DeleteResourceConfigRequest, DeleteSchemaReply, DeleteSchemaRequest,
+    DeleteShareGroupMemberReply, DeleteShareGroupMemberRequest, DeleteShareGroupReply,
+    DeleteShareGroupRequest, DeleteTenantReply, DeleteTenantRequest, ExistsReply, ExistsRequest,
+    GetOffsetDataReply, GetOffsetDataRequest, GetPrefixReply, GetPrefixRequest, GetReply,
+    GetRequest, GetResourceConfigReply, GetResourceConfigRequest, HeartbeatReply, HeartbeatRequest,
+    JoinClusterReply, JoinClusterRequest, LeaveClusterReply, LeaveClusterRequest,
+    ListBindSchemaReply, ListBindSchemaRequest, ListSchemaReply, ListSchemaRequest,
+    ListShareGroupMemberReply, ListShareGroupMemberRequest, ListShareGroupReply,
+    ListShareGroupRequest, ListTenantReply, ListTenantRequest, NodeListReply, NodeListRequest,
+    RegisterNodeReply, RegisterNodeRequest, SaveOffsetDataReply, SaveOffsetDataRequest, SetReply,
+    SetRequest, SetResourceConfigReply, SetResourceConfigRequest, SnapshotReply, SnapshotRequest,
+    UnBindSchemaReply, UnBindSchemaRequest, UnRegisterNodeReply, UnRegisterNodeRequest,
+    UpdateSchemaReply, UpdateSchemaRequest, UpdateTenantReply, UpdateTenantRequest, VoteReply,
+    VoteRequest,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
@@ -327,21 +331,82 @@ impl_retriable_request!(
 );
 
 impl_retriable_request!(
-    AddLearnerRequest,
+    JoinClusterRequest,
     MetaServiceServiceClient<Channel>,
-    AddLearnerReply,
-    add_learner,
+    JoinClusterReply,
+    join_cluster,
     "PlacementService",
-    "AddLearner",
+    "JoinCluster",
     true
 );
 
 impl_retriable_request!(
-    ChangeMembershipRequest,
+    LeaveClusterRequest,
     MetaServiceServiceClient<Channel>,
-    ChangeMembershipReply,
-    change_membership,
+    LeaveClusterReply,
+    leave_cluster,
     "PlacementService",
-    "ChangeMembership",
+    "LeaveCluster",
+    true
+);
+
+// ShareGroup
+impl_retriable_request!(
+    ListShareGroupMemberRequest,
+    MetaServiceServiceClient<Channel>,
+    ListShareGroupMemberReply,
+    list_share_group_member,
+    "PlacementService",
+    "ListShareGroupMember",
+    true
+);
+
+impl_retriable_request!(
+    ListShareGroupRequest,
+    MetaServiceServiceClient<Channel>,
+    ListShareGroupReply,
+    list_share_group,
+    "PlacementService",
+    "ListShareGroup",
+    true
+);
+
+impl_retriable_request!(
+    CreateShareGroupRequest,
+    MetaServiceServiceClient<Channel>,
+    CreateShareGroupReply,
+    create_share_group,
+    "PlacementService",
+    "CreateShareGroup",
+    true
+);
+
+impl_retriable_request!(
+    DeleteShareGroupRequest,
+    MetaServiceServiceClient<Channel>,
+    DeleteShareGroupReply,
+    delete_share_group,
+    "PlacementService",
+    "DeleteShareGroup",
+    true
+);
+
+impl_retriable_request!(
+    AddShareGroupMemberRequest,
+    MetaServiceServiceClient<Channel>,
+    AddShareGroupMemberReply,
+    add_share_group_member,
+    "PlacementService",
+    "AddShareGroupMember",
+    true
+);
+
+impl_retriable_request!(
+    DeleteShareGroupMemberRequest,
+    MetaServiceServiceClient<Channel>,
+    DeleteShareGroupMemberReply,
+    delete_share_group_member,
+    "PlacementService",
+    "DeleteShareGroupMember",
     true
 );

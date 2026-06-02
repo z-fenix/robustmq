@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use common_base::error::common::CommonError;
@@ -123,7 +124,7 @@ impl PriorityGroupConsumer {
     }
 
     /// Read messages in priority order (critical → urgent → normal) using per-priority tags.
-    /// `base_tag` has the form `{tenant}_{mail_id}`; each consumer appends its own priority
+    /// `base_tag` has the form `{tenant}_{mail_address}`; each consumer appends its own priority
     /// suffix (`_critical`, `_urgent`, `_normal`) so that only matching records are returned.
     pub async fn next_messages_by_tags(
         &self,
@@ -161,6 +162,33 @@ impl PriorityGroupConsumer {
         result.extend_from_slice(&normal_data);
 
         Ok(result)
+    }
+
+    /// Stage the same shard offsets into all three priority consumers so a single
+    /// `commit()` call persists them for every priority group.
+    pub fn stage_offsets(&self, tenant: &str, topic: &str, shard_offsets: &HashMap<String, u64>) {
+        for (shard, &offset) in shard_offsets {
+            self.critical_consumer
+                .stage_shard_offset(tenant, topic, shard, offset);
+            self.urgent_consumer
+                .stage_shard_offset(tenant, topic, shard, offset);
+            self.normal_consumer
+                .stage_shard_offset(tenant, topic, shard, offset);
+        }
+    }
+
+    pub fn set_current_offsets(
+        &self,
+        tenant: &str,
+        topic: &str,
+        shard_offsets: &HashMap<String, u64>,
+    ) {
+        self.critical_consumer
+            .set_current_offsets(tenant, topic, shard_offsets);
+        self.urgent_consumer
+            .set_current_offsets(tenant, topic, shard_offsets);
+        self.normal_consumer
+            .set_current_offsets(tenant, topic, shard_offsets);
     }
 
     pub async fn commit(&self) -> Result<(), CommonError> {

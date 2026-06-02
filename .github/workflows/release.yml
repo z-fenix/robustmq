@@ -38,7 +38,7 @@ jobs:
       github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.title, 'release:')
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 240
 
     strategy:
       fail-fast: false
@@ -52,6 +52,8 @@ jobs:
             runner: macos-15-intel
           - platform: darwin-arm64
             runner: macos-14
+          - platform: windows-amd64
+            runner: windows-2022
 
     steps:
       - name: Checkout code
@@ -68,6 +70,18 @@ jobs:
           sudo apt-get clean
           df -h
 
+      - name: Configure 8GB swap (linux-arm64 only, prevent OOM during link)
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+          free -h
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -75,37 +89,90 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler cmake
+          sudo apt-get install -y protobuf-compiler cmake pkg-config libssl-dev libsasl2-dev libcurl4-openssl-dev libzstd-dev
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install protobuf cmake
 
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install protoc cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
+          # Set OpenSSL env vars so openssl-sys can find the pre-installed OpenSSL
+          $opensslDir = "C:\Program Files\OpenSSL-Win64"
+          if (-not (Test-Path $opensslDir)) { $opensslDir = "C:\Program Files\OpenSSL" }
+          echo "OPENSSL_DIR=$opensslDir" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
       - name: Setup Node.js (for frontend build)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
         with:
-          version: 9
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pnpm-store-${{ hashFiles('build/robustmq-copilot/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-pnpm-store-
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "release-${{ matrix.platform }}"
-          save-if: "false"
+          save-if: "true"
 
-      - name: Run make release
+      - name: Install jq (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install jq -y
+
+      - name: Run make release (linux-arm64; reduced parallelism + no LTO to avoid OOM)
+        if: matrix.platform == 'linux-arm64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_BUILD_JOBS: '2'
+          CARGO_PROFILE_RELEASE_LTO: 'false'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+        run: |
+          echo "Building and releasing for ${{ matrix.platform }} (memory-constrained)"
+          make release
+
+      - name: Run make release (Linux / macOS, other targets)
+        if: runner.os != 'Windows' && matrix.platform != 'linux-arm64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Building and releasing for ${{ matrix.platform }}, version from Cargo.toml"
           make release
 
+      - name: Run release script (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          echo "Building and releasing for ${{ matrix.platform }}, version from Cargo.toml"
+          ./scripts/release.sh
+
       - name: Summary
+        shell: bash
         run: |
           echo "## 🚀 Release - ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
           echo "✅ Package built and uploaded successfully" >> $GITHUB_STEP_SUMMARY

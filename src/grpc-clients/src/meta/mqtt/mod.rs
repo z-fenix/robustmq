@@ -23,16 +23,12 @@ use protocol::meta::meta_service_mqtt::{
     DeleteBlacklistReply, DeleteBlacklistRequest, DeleteConnectorReply, DeleteConnectorRequest,
     DeleteSessionReply, DeleteSessionRequest, DeleteSubscribeReply, DeleteSubscribeRequest,
     DeleteTopicReply, DeleteTopicRequest, DeleteTopicRewriteRuleReply,
-    DeleteTopicRewriteRuleRequest, DeleteUserReply, DeleteUserRequest, GetLastWillMessageReply,
-    GetLastWillMessageRequest, GetShareSubLeaderReply, GetShareSubLeaderRequest,
-    GetTopicRetainMessageReply, GetTopicRetainMessageRequest, ListAclReply, ListAclRequest,
-    ListAutoSubscribeRuleReply, ListAutoSubscribeRuleRequest, ListBlacklistReply,
+    DeleteTopicRewriteRuleRequest, DeleteUserReply, DeleteUserRequest, ListAclReply,
+    ListAclRequest, ListAutoSubscribeRuleReply, ListAutoSubscribeRuleRequest, ListBlacklistReply,
     ListBlacklistRequest, ListConnectorReply, ListConnectorRequest, ListSessionReply,
     ListSessionRequest, ListSubscribeReply, ListSubscribeRequest, ListTopicReply, ListTopicRequest,
     ListTopicRewriteRuleReply, ListTopicRewriteRuleRequest, ListUserReply, ListUserRequest,
-    SaveLastWillMessageReply, SaveLastWillMessageRequest, SetSubscribeReply, SetSubscribeRequest,
-    SetTopicRetainMessageReply, SetTopicRetainMessageRequest, UpdateConnectorReply,
-    UpdateConnectorRequest,
+    SetSubscribeReply, SetSubscribeRequest, UpdateConnectorReply, UpdateConnectorRequest,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
@@ -40,16 +36,6 @@ use tonic::Streaming;
 use crate::macros::impl_retriable_request;
 
 pub mod call;
-
-impl_retriable_request!(
-    GetShareSubLeaderRequest,
-    MqttServiceClient<Channel>,
-    GetShareSubLeaderReply,
-    get_share_sub_leader,
-    "MqttService",
-    "GetShareSubLeader",
-    true
-);
 
 impl_retriable_request!(
     CreateUserRequest,
@@ -112,26 +98,6 @@ impl_retriable_request!(
 );
 
 impl_retriable_request!(
-    SetTopicRetainMessageRequest,
-    MqttServiceClient<Channel>,
-    SetTopicRetainMessageReply,
-    set_topic_retain_message,
-    "MqttService",
-    "SetTopicRetainMessage",
-    true
-);
-
-impl_retriable_request!(
-    GetTopicRetainMessageRequest,
-    MqttServiceClient<Channel>,
-    GetTopicRetainMessageReply,
-    get_topic_retain_message,
-    "MqttService",
-    "GetTopicRetainMessage",
-    true
-);
-
-impl_retriable_request!(
     CreateSessionRequest,
     MqttServiceClient<Channel>,
     CreateSessionReply,
@@ -158,26 +124,6 @@ impl_retriable_request!(
     list_session,
     "MqttService",
     "ListSession",
-    true
-);
-
-impl_retriable_request!(
-    SaveLastWillMessageRequest,
-    MqttServiceClient<Channel>,
-    SaveLastWillMessageReply,
-    save_last_will_message,
-    "MqttService",
-    "SaveLastWillMessage",
-    true
-);
-
-impl_retriable_request!(
-    GetLastWillMessageRequest,
-    MqttServiceClient<Channel>,
-    GetLastWillMessageReply,
-    get_last_will_message,
-    "MqttService",
-    "GetLastWillMessage",
     true
 );
 

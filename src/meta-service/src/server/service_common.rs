@@ -16,7 +16,7 @@ use crate::core::cache::MetaCacheManager;
 use crate::core::cluster::{register_node_by_req, un_register_node_by_req};
 use crate::raft::manager::MultiRaftManager;
 use crate::raft::services::{
-    add_learner_by_req, append_by_req, change_membership_by_req, snapshot_by_req, vote_by_req,
+    append_by_req, join_cluster_by_req, leave_cluster_by_req, snapshot_by_req, vote_by_req,
 };
 use crate::server::services::common::inner::{
     cluster_status_by_req, delete_resource_config_by_req, get_offset_data_by_req,
@@ -33,26 +33,33 @@ use crate::server::services::common::schema::{
 use crate::server::services::common::tenant::{
     create_tenant_by_req, delete_tenant_by_req, list_tenant_by_req, update_tenant_by_req,
 };
+use crate::server::services::mqtt::share_group::{
+    add_share_group_member_by_req, create_share_group_by_req, delete_share_group_by_req,
+    delete_share_group_member_by_req, list_share_group_by_req, list_share_group_member_by_req,
+};
 use grpc_clients::pool::ClientPool;
 use node_call::NodeCallManager;
 use prost_validate::Validator;
 use protocol::meta::meta_service_common::meta_service_service_server::MetaServiceService;
 use protocol::meta::meta_service_common::{
-    AddLearnerReply, AddLearnerRequest, AppendReply, AppendRequest, BindSchemaReply,
-    BindSchemaRequest, ChangeMembershipReply, ChangeMembershipRequest, ClusterStatusReply,
-    ClusterStatusRequest, CreateSchemaReply, CreateSchemaRequest, CreateTenantReply,
-    CreateTenantRequest, DeleteReply, DeleteRequest, DeleteResourceConfigReply,
-    DeleteResourceConfigRequest, DeleteSchemaReply, DeleteSchemaRequest, DeleteTenantReply,
-    DeleteTenantRequest, ExistsReply, ExistsRequest, GetOffsetDataReply, GetOffsetDataRequest,
-    GetPrefixReply, GetPrefixRequest, GetReply, GetRequest, GetResourceConfigReply,
-    GetResourceConfigRequest, HeartbeatReply, HeartbeatRequest, ListBindSchemaReply,
-    ListBindSchemaRequest, ListSchemaReply, ListSchemaRequest, ListTenantReply, ListTenantRequest,
-    NodeListReply, NodeListRequest, RegisterNodeReply, RegisterNodeRequest, ReportMonitorReply,
-    ReportMonitorRequest, SaveOffsetDataReply, SaveOffsetDataRequest, SetReply, SetRequest,
-    SetResourceConfigReply, SetResourceConfigRequest, SnapshotReply, SnapshotRequest,
-    UnBindSchemaReply, UnBindSchemaRequest, UnRegisterNodeReply, UnRegisterNodeRequest,
-    UpdateSchemaReply, UpdateSchemaRequest, UpdateTenantReply, UpdateTenantRequest, VoteReply,
-    VoteRequest,
+    AddShareGroupMemberReply, AddShareGroupMemberRequest, AppendReply, AppendRequest,
+    BindSchemaReply, BindSchemaRequest, ClusterStatusReply, ClusterStatusRequest,
+    CreateSchemaReply, CreateSchemaRequest, CreateShareGroupReply, CreateShareGroupRequest,
+    CreateTenantReply, CreateTenantRequest, DeleteReply, DeleteRequest, DeleteResourceConfigReply,
+    DeleteResourceConfigRequest, DeleteSchemaReply, DeleteSchemaRequest,
+    DeleteShareGroupMemberReply, DeleteShareGroupMemberRequest, DeleteShareGroupReply,
+    DeleteShareGroupRequest, DeleteTenantReply, DeleteTenantRequest, ExistsReply, ExistsRequest,
+    GetOffsetDataReply, GetOffsetDataRequest, GetPrefixReply, GetPrefixRequest, GetReply,
+    GetRequest, GetResourceConfigReply, GetResourceConfigRequest, HeartbeatReply, HeartbeatRequest,
+    JoinClusterReply, JoinClusterRequest, LeaveClusterReply, LeaveClusterRequest,
+    ListBindSchemaReply, ListBindSchemaRequest, ListSchemaReply, ListSchemaRequest,
+    ListShareGroupMemberReply, ListShareGroupMemberRequest, ListShareGroupReply,
+    ListShareGroupRequest, ListTenantReply, ListTenantRequest, NodeListReply, NodeListRequest,
+    RegisterNodeReply, RegisterNodeRequest, ReportMonitorReply, ReportMonitorRequest,
+    SaveOffsetDataReply, SaveOffsetDataRequest, SetReply, SetRequest, SetResourceConfigReply,
+    SetResourceConfigRequest, SnapshotReply, SnapshotRequest, UnBindSchemaReply,
+    UnBindSchemaRequest, UnRegisterNodeReply, UnRegisterNodeRequest, UpdateSchemaReply,
+    UpdateSchemaRequest, UpdateTenantReply, UpdateTenantRequest, VoteReply, VoteRequest,
 };
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::pin::Pin;
@@ -142,7 +149,6 @@ impl MetaServiceService for GrpcPlacementService {
         register_node_by_req(
             &self.cluster_cache,
             &self.raft_manager,
-            &self.client_pool,
             &self.mqtt_call_manager,
             req,
         )
@@ -161,7 +167,7 @@ impl MetaServiceService for GrpcPlacementService {
         un_register_node_by_req(
             &self.cluster_cache,
             &self.raft_manager,
-            &self.client_pool,
+            &self.rocksdb_engine_handler,
             &self.mqtt_call_manager,
             req,
         )
@@ -536,27 +542,23 @@ impl MetaServiceService for GrpcPlacementService {
             .map(Response::new)
     }
 
-    async fn add_learner(
+    async fn join_cluster(
         &self,
-        request: Request<AddLearnerRequest>,
-    ) -> Result<Response<AddLearnerReply>, Status> {
+        request: Request<JoinClusterRequest>,
+    ) -> Result<Response<JoinClusterReply>, Status> {
         let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        add_learner_by_req(&self.raft_manager, &req)
+        join_cluster_by_req(&self.raft_manager, &req)
             .await
             .map_err(Self::to_status)
             .map(Response::new)
     }
 
-    async fn change_membership(
+    async fn leave_cluster(
         &self,
-        request: Request<ChangeMembershipRequest>,
-    ) -> Result<Response<ChangeMembershipReply>, Status> {
+        request: Request<LeaveClusterRequest>,
+    ) -> Result<Response<LeaveClusterReply>, Status> {
         let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        change_membership_by_req(&self.raft_manager, &req)
+        leave_cluster_by_req(&self.raft_manager, &req)
             .await
             .map_err(Self::to_status)
             .map(Response::new)
@@ -570,5 +572,97 @@ impl MetaServiceService for GrpcPlacementService {
             .await
             .map_err(Self::to_status)
             .map(Response::new)
+    }
+
+    async fn list_share_group(
+        &self,
+        request: Request<ListShareGroupRequest>,
+    ) -> Result<Response<ListShareGroupReply>, Status> {
+        let req = request.into_inner();
+        self.validate_request(&req)?;
+        list_share_group_by_req(&self.rocksdb_engine_handler, &req)
+            .await
+            .map_err(Self::to_status)
+            .map(Response::new)
+    }
+
+    async fn list_share_group_member(
+        &self,
+        request: Request<ListShareGroupMemberRequest>,
+    ) -> Result<Response<ListShareGroupMemberReply>, Status> {
+        let req = request.into_inner();
+        list_share_group_member_by_req(&self.rocksdb_engine_handler, &req)
+            .map_err(Self::to_status)
+            .map(Response::new)
+    }
+
+    async fn create_share_group(
+        &self,
+        request: Request<CreateShareGroupRequest>,
+    ) -> Result<Response<CreateShareGroupReply>, Status> {
+        let req = request.into_inner();
+        self.validate_request(&req)?;
+        create_share_group_by_req(
+            &self.cluster_cache,
+            &self.raft_manager,
+            &self.rocksdb_engine_handler,
+            &self.mqtt_call_manager,
+            &req,
+        )
+        .await
+        .map_err(Self::to_status)
+        .map(Response::new)
+    }
+
+    async fn delete_share_group(
+        &self,
+        request: Request<DeleteShareGroupRequest>,
+    ) -> Result<Response<DeleteShareGroupReply>, Status> {
+        let req = request.into_inner();
+        self.validate_request(&req)?;
+        delete_share_group_by_req(
+            &self.raft_manager,
+            &self.rocksdb_engine_handler,
+            &self.mqtt_call_manager,
+            &req,
+        )
+        .await
+        .map_err(Self::to_status)
+        .map(Response::new)
+    }
+
+    async fn add_share_group_member(
+        &self,
+        request: Request<AddShareGroupMemberRequest>,
+    ) -> Result<Response<AddShareGroupMemberReply>, Status> {
+        let req = request.into_inner();
+        self.validate_request(&req)?;
+        add_share_group_member_by_req(
+            &self.cluster_cache,
+            &self.raft_manager,
+            &self.rocksdb_engine_handler,
+            &self.mqtt_call_manager,
+            &req,
+        )
+        .await
+        .map_err(Self::to_status)
+        .map(Response::new)
+    }
+
+    async fn delete_share_group_member(
+        &self,
+        request: Request<DeleteShareGroupMemberRequest>,
+    ) -> Result<Response<DeleteShareGroupMemberReply>, Status> {
+        let req = request.into_inner();
+        self.validate_request(&req)?;
+        delete_share_group_member_by_req(
+            &self.raft_manager,
+            &self.rocksdb_engine_handler,
+            &self.mqtt_call_manager,
+            &req,
+        )
+        .await
+        .map_err(Self::to_status)
+        .map(Response::new)
     }
 }

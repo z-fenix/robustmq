@@ -18,14 +18,11 @@ use common_base::{error::common::CommonError, role::is_broker_node, task::TaskSu
 use common_group::manager::OffsetManager;
 use common_security::manager::SecurityManager;
 use connector::manager::ConnectorManager;
-use delay_message::manager::DelayMessageManager;
+pub use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
 use mqtt_broker::{
     broker::{MqttBrokerServer, MqttBrokerServerParams},
-    core::{
-        cache::MQTTCacheManager as MqttCacheManager, event::EventReportManager,
-        retain::RetainMessageManager,
-    },
+    core::{cache::MQTTCacheManager as MqttCacheManager, event::EventReportManager},
     storage::session::SessionBatcher,
     subscribe::{manager::SubscribeManager, PushManager},
 };
@@ -51,9 +48,9 @@ pub struct MqttBuildParams {
     pub task_supervisor: Arc<TaskSupervisor>,
     pub global_limit_manager: Arc<GlobalRateLimiterManager>,
     pub node_call: Arc<NodeCallManager>,
-    pub stop_sx: broadcast::Sender<bool>,
     pub request_channel: Arc<RequestChannel>,
     pub security_manager: Arc<SecurityManager>,
+    pub delay_message_manager: Arc<DelayMessageManager>,
 }
 
 pub fn build_mqtt_params(
@@ -69,9 +66,9 @@ pub fn build_mqtt_params(
     let ts = p.task_supervisor;
     let glm = p.global_limit_manager;
     let nc = p.node_call;
-    let stop = p.stop_sx;
     let request_channel = p.request_channel;
     let security_manager = p.security_manager;
+    let delay_message_manager = p.delay_message_manager;
 
     broker_runtime.block_on(async move {
         match build_broker_mqtt_params(
@@ -84,9 +81,9 @@ pub fn build_mqtt_params(
             ts,
             glm,
             nc,
-            stop,
             request_channel,
             security_manager,
+            delay_message_manager,
         )
         .await
         {
@@ -99,8 +96,7 @@ pub fn build_mqtt_params(
     })
 }
 
-/// Build [`MqttBrokerServerParams`] on the caller's runtime so that tasks
-/// spawned during construction (e.g. `RetainMessageManager`) land there.
+/// Build [`MqttBrokerServerParams`] on the caller's runtime.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_broker_mqtt_params(
     client_pool: Arc<ClientPool>,
@@ -112,9 +108,9 @@ pub(crate) async fn build_broker_mqtt_params(
     task_supervisor: Arc<TaskSupervisor>,
     global_limit_manager: Arc<GlobalRateLimiterManager>,
     node_call: Arc<NodeCallManager>,
-    stop_sx: broadcast::Sender<bool>,
     request_channel: Arc<RequestChannel>,
     security_manager: Arc<SecurityManager>,
+    delay_message_manager: Arc<DelayMessageManager>,
 ) -> Result<MqttBrokerServerParams, CommonError> {
     let cache_manager = Arc::new(MqttCacheManager::new(
         client_pool.clone(),
@@ -122,24 +118,14 @@ pub(crate) async fn build_broker_mqtt_params(
     ));
     let subscribe_manager = Arc::new(SubscribeManager::new());
     let connector_manager = Arc::new(ConnectorManager::new());
-    let delay_message_manager = Arc::new(
-        DelayMessageManager::new(client_pool.clone(), storage_driver_manager.clone(), 5).await?,
-    );
     let metrics_cache_manager = Arc::new(MQTTMetricsCache::new(rocksdb_engine_handler.clone()));
     let schema_manager = Arc::new(SchemaRegisterManager::new());
-    let retain_message_manager = RetainMessageManager::new(
-        cache_manager.clone(),
-        client_pool.clone(),
-        connection_manager.clone(),
-        stop_sx,
-    );
     let push_manager = Arc::new(PushManager::new(
         cache_manager.clone(),
         storage_driver_manager.clone(),
         connection_manager.clone(),
         rocksdb_engine_handler.clone(),
         subscribe_manager.clone(),
-        client_pool.clone(),
     ));
 
     let session_batcher = SessionBatcher::new();
@@ -161,7 +147,6 @@ pub(crate) async fn build_broker_mqtt_params(
         rocksdb_engine_handler,
         node_cache: broker_cache,
         offset_manager,
-        retain_message_manager,
         push_manager,
         task_supervisor,
         global_limit_manager,
@@ -171,19 +156,24 @@ pub(crate) async fn build_broker_mqtt_params(
 }
 
 impl BrokerServer {
-    pub async fn start_mqtt_broker(
+    pub async fn create_mqtt_server(
         &self,
-        stop: broadcast::Sender<bool>,
-    ) -> Option<(broadcast::Sender<bool>, ArcCommandAdapter)> {
+    ) -> Option<(broadcast::Sender<bool>, MqttBrokerServer, ArcCommandAdapter)> {
         if !is_broker_node(&self.config.roles) {
             return None;
         }
-        let stop_handle = stop.clone();
-        let server = MqttBrokerServer::new(self.mqtt_params.clone(), stop).await;
+        let (stop_send, _) = broadcast::channel(2);
+        let server = MqttBrokerServer::new(self.mqtt_params.clone(), stop_send.clone()).await;
         let command = server.command.clone();
+        Some((stop_send, server, command))
+    }
+
+    pub fn spawn_mqtt_broker(&self, server: MqttBrokerServer) {
         self.broker_runtime.spawn(Box::pin(async move {
-            server.start().await;
+            if let Err(e) = server.start().await {
+                tracing::error!("MQTT broker failed to start: {:#}", e);
+                std::process::exit(1);
+            }
         }));
-        Some((stop_handle, command))
     }
 }

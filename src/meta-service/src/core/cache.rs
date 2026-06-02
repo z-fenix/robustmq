@@ -26,7 +26,7 @@ use common_base::tools::now_second;
 use dashmap::DashMap;
 use metadata_struct::connector::MQTTConnector;
 use metadata_struct::meta::node::BrokerNode;
-use metadata_struct::mqtt::group_leader::MqttGroupLeader;
+use metadata_struct::mqtt::share_group::ShareGroup;
 use metadata_struct::storage::segment::EngineSegment;
 use metadata_struct::storage::segment_meta::EngineSegmentMetadata;
 use metadata_struct::storage::shard::EngineShard;
@@ -54,7 +54,7 @@ pub struct MetaCacheManager {
     pub connector_heartbeat: DashMap<String, ConnectorHeartbeat>,
 
     // (group_name, broker_id)
-    pub group_leader: DashMap<String, MqttGroupLeader>,
+    pub group_leader: DashMap<String, ShareGroup>,
 
     // Storage Engine
     //（shard_name, JournalShard）
@@ -163,19 +163,15 @@ impl MetaCacheManager {
     }
 }
 
-pub fn load_cache(
+pub fn load_cache_by_rocksdb(
     cache_manager: &Arc<MetaCacheManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
 ) -> Result<(), MetaServiceError> {
-    // Tenant
     let tenant_storage = TenantStorage::new(rocksdb_engine_handler.clone());
     for tenant in tenant_storage.list()? {
         cache_manager.add_tenant(tenant);
     }
 
-    // placement
-
-    // journal
     let shard_storage = ShardStorage::new(rocksdb_engine_handler.clone());
     let res = shard_storage.all_shard()?;
     for shard in res {
@@ -193,7 +189,7 @@ pub fn load_cache(
     for meta in res {
         cache_manager.set_segment_meta(meta);
     }
-    // connector
+
     let connector = MqttConnectorStorage::new(rocksdb_engine_handler.clone());
     let data = connector.list()?;
     for connector in data {

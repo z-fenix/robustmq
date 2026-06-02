@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use common_base::error::common::CommonError;
-use common_config::config::{LLMClientConfig, LLMPlatform};
+use common_config::config::{LLMConfig, LLMPlatform};
 use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatRequest};
 use genai::resolver::{AuthData, Endpoint};
@@ -47,12 +47,17 @@ pub struct LLMClient {
 }
 
 impl LLMClient {
-    pub fn new(config: LLMClientConfig) -> LLMResult<Self> {
+    pub fn new(config: LLMConfig) -> LLMResult<Self> {
         config
             .validate()
             .map_err(|e| Box::new(CommonError::CommonError(e)))?;
 
-        let adapter_kind = platform_to_adapter_kind(&config.platform);
+        let platform = config.platform.as_ref().ok_or_else(|| {
+            Box::new(CommonError::CommonError(
+                "platform is not configured".to_string(),
+            ))
+        })?;
+        let adapter_kind = platform_to_adapter_kind(platform);
         let base_url = config.base_url.clone();
         let token = config.token.clone();
 
@@ -73,12 +78,52 @@ impl LLMClient {
             })
             .build();
 
-        let model_name = config.model.clone();
+        let model_name = config.model.clone().unwrap_or_default();
         Ok(Self { model_name, client })
     }
 
     pub async fn chat(&self, prompt: &str) -> LLMResult<String> {
         self.chat_with_system(None, prompt).await
+    }
+
+    pub async fn embed(&self, input: &str) -> LLMResult<Vec<f32>> {
+        if input.trim().is_empty() {
+            return Err(Box::new(CommonError::CommonError(
+                "embed input cannot be empty".to_string(),
+            )));
+        }
+
+        let response = self
+            .client
+            .embed(&self.model_name, input, None)
+            .await
+            .map_err(|e| Box::new(CommonError::CommonError(format!("LLM embed failed: {e}"))))?;
+
+        response.first_vector().cloned().ok_or_else(|| {
+            Box::new(CommonError::CommonError(
+                "embed response has no vector".to_string(),
+            ))
+        })
+    }
+
+    pub async fn embed_batch(&self, inputs: Vec<String>) -> LLMResult<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Err(Box::new(CommonError::CommonError(
+                "embed_batch inputs cannot be empty".to_string(),
+            )));
+        }
+
+        let response = self
+            .client
+            .embed_batch(&self.model_name, inputs, None)
+            .await
+            .map_err(|e| {
+                Box::new(CommonError::CommonError(format!(
+                    "LLM embed_batch failed: {e}"
+                )))
+            })?;
+
+        Ok(response.into_vectors())
     }
 
     pub async fn chat_with_system(
@@ -119,7 +164,7 @@ impl LLMClient {
 #[cfg(test)]
 mod tests {
     use super::LLMClient;
-    use common_config::config::{LLMClientConfig, LLMPlatform};
+    use common_config::config::{LLMConfig, LLMPlatform};
 
     #[tokio::test]
     #[ignore = "requires OPENAI_API_KEY and real network access"]
@@ -130,9 +175,11 @@ mod tests {
             ))
         })?;
 
-        let config = LLMClientConfig {
-            platform: LLMPlatform::OpenAI,
-            model: "gpt-4o-mini".to_string(),
+        let config = LLMConfig {
+            embedding: Some("api".to_string()),
+            embedding_model_path: None,
+            platform: Some(LLMPlatform::OpenAI),
+            model: Some("gpt-4o-mini".to_string()),
             token: Some(token),
             base_url: std::env::var("OPENAI_BASE_URL").ok(),
         };
@@ -147,9 +194,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires local ollama service and model pre-pulled"]
     async fn test_ollama_chat() -> super::LLMResult<()> {
-        let config = LLMClientConfig {
-            platform: LLMPlatform::Ollama,
-            model: std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:3b".to_string()),
+        let config = LLMConfig {
+            embedding: Some("fastembed".to_string()),
+            embedding_model_path: None,
+            platform: Some(LLMPlatform::Ollama),
+            model: Some(std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:3b".to_string())),
             token: None,
             base_url: std::env::var("OLLAMA_BASE_URL").ok(),
         };

@@ -15,6 +15,7 @@
 use broker_core::cache::NodeCacheManager;
 use common_base::{role::is_broker_node, task::TaskSupervisor};
 use common_security::manager::SecurityManager;
+use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
 use nats_broker::broker::{NatsBrokerServer, NatsBrokerServerParams};
 use nats_broker::core::cache::NatsCacheManager;
@@ -38,6 +39,7 @@ pub struct NatsBuildParams {
     pub shared_request_channel: Arc<RequestChannel>,
     pub storage_driver_manager: Arc<StorageDriverManager>,
     pub security_manager: Arc<SecurityManager>,
+    pub delay_message_manager: Arc<DelayMessageManager>,
 }
 
 pub fn build_nats_params(p: NatsBuildParams) -> NatsBrokerServerParams {
@@ -58,19 +60,25 @@ pub fn build_nats_params(p: NatsBuildParams) -> NatsBrokerServerParams {
         request_channel: p.shared_request_channel,
         storage_driver_manager: p.storage_driver_manager,
         security_manager: p.security_manager,
+        delay_message_manager: p.delay_message_manager,
     }
 }
 
 impl BrokerServer {
-    pub fn start_nats_broker(&self, stop: broadcast::Sender<bool>) {
+    pub fn start_nats_broker(&self) -> Option<broadcast::Sender<bool>> {
         if !is_broker_node(&self.config.roles) {
-            return;
+            return None;
         }
         let mut params = self.nats_params.clone();
-        params.stop_sx = stop;
+        let (stop_send, _) = broadcast::channel(2);
+        params.stop_sx = stop_send.clone();
         let server = NatsBrokerServer::new(params);
         self.broker_runtime.spawn(Box::pin(async move {
-            server.start().await;
+            if let Err(e) = server.start().await {
+                tracing::error!("{:#}", e);
+                std::process::exit(1);
+            }
         }));
+        Some(stop_send)
     }
 }

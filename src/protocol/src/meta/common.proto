@@ -72,6 +72,19 @@ service MetaServiceService {
 
   rpc ListTenant(ListTenantRequest) returns (stream ListTenantReply) {}
 
+  // ShareGroup
+  rpc ListShareGroup(ListShareGroupRequest) returns (ListShareGroupReply) {}
+
+  rpc CreateShareGroup(CreateShareGroupRequest) returns (CreateShareGroupReply) {}
+
+  rpc DeleteShareGroup(DeleteShareGroupRequest) returns (DeleteShareGroupReply) {}
+
+  rpc ListShareGroupMember(ListShareGroupMemberRequest) returns (ListShareGroupMemberReply) {}
+
+  rpc AddShareGroupMember(AddShareGroupMemberRequest) returns (AddShareGroupMemberReply) {}
+
+  rpc DeleteShareGroupMember(DeleteShareGroupMemberRequest) returns (DeleteShareGroupMemberReply) {}
+
   // KV
   rpc Set(SetRequest) returns (SetReply) {}
 
@@ -90,9 +103,9 @@ service MetaServiceService {
 
   rpc Snapshot(SnapshotRequest) returns (SnapshotReply) {}
 
-  rpc AddLearner(AddLearnerRequest) returns (AddLearnerReply) {}
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterReply) {}
 
-  rpc ChangeMembership(ChangeMembershipRequest) returns (ChangeMembershipReply) {}
+  rpc LeaveCluster(LeaveClusterRequest) returns (LeaveClusterReply) {}
 }
 
 message ClusterStatusRequest {}
@@ -352,28 +365,71 @@ message SnapshotReply {
   bytes value = 1;
 }
 
-message AddLearnerRequest {
-  uint64 node_id = 1 [(validate.rules).uint64.gte = 0];
-  Node node = 2 [(validate.rules).message.required = true];
-  bool blocking = 3;
-  string machine = 4 [(validate.rules).string.min_len = 1];
-}
-
 message Node {
   string rpc_addr = 1 [(validate.rules).string.min_len = 1];
   uint64 node_id = 2 [(validate.rules).uint64.gte = 0];
 }
 
-message AddLearnerReply {
-  bytes value = 1;
+message JoinClusterRequest {
+  uint64 node_id = 1 [(validate.rules).uint64.gte = 1];
+  string rpc_addr = 2 [(validate.rules).string.min_len = 1];
 }
 
-message ChangeMembershipRequest {
-  string machine = 1 [(validate.rules).string.min_len = 1];
-  repeated uint64 members = 2 [(validate.rules).repeated.min_items = 1];
-  bool retain = 3;
+message JoinClusterReply {}
+
+message LeaveClusterRequest {
+  uint64 node_id = 1 [(validate.rules).uint64.gte = 1];
 }
 
-message ChangeMembershipReply {
-  bytes value = 1;
+message LeaveClusterReply {}
+
+// ListShareGroup supports three query dimensions:
+//   all:    tenant and group both empty
+//   tenant: only tenant is set
+//   group:  both tenant and group are set
+message ListShareGroupRequest {
+  string tenant = 1;
+  string group = 2;
 }
+
+message ListShareGroupReply {
+  repeated bytes groups = 1;
+}
+
+message CreateShareGroupRequest {
+  string tenant = 1 [(validate.rules).string.min_len = 1];
+  string group = 2 [(validate.rules).string.min_len = 1];
+  bytes params = 3;
+}
+
+message CreateShareGroupReply {}
+
+message DeleteShareGroupRequest {
+  string tenant = 1 [(validate.rules).string.min_len = 1];
+  string group = 2 [(validate.rules).string.min_len = 1];
+}
+
+message DeleteShareGroupReply {}
+
+// ListShareGroupMember: connect_id=0 means all members
+message ListShareGroupMemberRequest {
+  uint64 connect_id = 1;
+}
+
+message ListShareGroupMemberReply {
+  repeated bytes members = 1;
+}
+
+message AddShareGroupMemberRequest {
+  bytes data = 1 [(validate.rules).bytes.min_len = 1];
+}
+
+message AddShareGroupMemberReply {}
+
+message DeleteShareGroupMemberRequest {
+  uint64 broker_id = 1;
+  uint64 connect_id = 2;
+  string sid = 3 [(validate.rules).string.min_len = 1];
+}
+
+message DeleteShareGroupMemberReply {}

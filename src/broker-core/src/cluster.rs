@@ -18,15 +18,16 @@ use common_base::tools::{get_local_ip, now_second};
 use common_config::broker::broker_config;
 use common_config::config::BrokerConfig;
 use grpc_clients::meta::common::call::{
-    cluster_status, delete_resource_config, get_resource_config, heartbeat, node_list,
+    cluster_status, delete_resource_config, get_resource_config, heartbeat, kv_set, node_list,
     register_node, set_resource_config, unregister_node,
 };
 use grpc_clients::pool::ClientPool;
-use metadata_struct::meta::extend::{MqttNodeExtend, NatsNodeExtend, NodeExtend};
+use metadata_struct::meta::extend::{KafkaNodeExtend, MqttNodeExtend, NatsNodeExtend, NodeExtend};
 use metadata_struct::meta::node::BrokerNode;
 use protocol::meta::meta_service_common::{
     ClusterStatusRequest, DeleteResourceConfigRequest, GetResourceConfigRequest, HeartbeatRequest,
-    NodeListRequest, RegisterNodeRequest, SetResourceConfigRequest, UnRegisterNodeRequest,
+    NodeListRequest, RegisterNodeRequest, SetRequest, SetResourceConfigRequest,
+    UnRegisterNodeRequest,
 };
 use std::sync::Arc;
 
@@ -45,6 +46,16 @@ impl ClusterStorage {
         let reply =
             cluster_status(&self.client_pool, &conf.get_meta_service_addr(), request).await?;
         Ok(reply.content)
+    }
+
+    pub async fn raft_ping(&self) -> Result<(), CommonError> {
+        let conf = broker_config();
+        let request = SetRequest {
+            key: "__robustmq_raft_ping__".to_string(),
+            value: "1".to_string(),
+        };
+        kv_set(&self.client_pool, &conf.get_meta_service_addr(), request).await?;
+        Ok(())
     }
 
     pub async fn node_list(&self) -> Result<Vec<BrokerNode>, CommonError> {
@@ -83,6 +94,9 @@ impl ClusterStorage {
                 ws_addr: format!("{}:{}", local_ip, config.nats_runtime.ws_port),
                 wss_addr: format!("{}:{}", local_ip, config.nats_runtime.wss_port),
             },
+            kafka: KafkaNodeExtend {
+                tcp_addr: format!("{}:{}", local_ip, config.kafka_runtime.tcp_port),
+            },
         };
 
         let node = BrokerNode {
@@ -90,6 +104,7 @@ impl ClusterStorage {
             node_ip: local_ip.clone(),
             node_id: config.broker_id,
             grpc_addr: format!("{}:{}", local_ip, config.grpc_port),
+            http_addr: format!("{}:{}", local_ip, config.http_port),
             engine_addr: format!("{}:{}", local_ip, config.storage_runtime.tcp_port),
             extend,
             start_time: cache_manager.get_start_time(),

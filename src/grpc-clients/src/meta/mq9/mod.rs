@@ -14,8 +14,9 @@
 
 use protocol::meta::meta_service_mq9::mq9_service_client::Mq9ServiceClient;
 use protocol::meta::meta_service_mq9::{
-    CreateEmailReply, CreateEmailRequest, DeleteEmailReply, DeleteEmailRequest, ListEmailReply,
-    ListEmailRequest,
+    CreateAgentReply, CreateAgentRequest, CreateMailReply, CreateMailRequest, DeleteAgentReply,
+    DeleteAgentRequest, DeleteMailReply, DeleteMailRequest, ListAgentReply, ListAgentRequest,
+    ListMailReply, ListMailRequest, SearchAgentReply, SearchAgentRequest,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
@@ -25,31 +26,71 @@ use crate::macros::impl_retriable_request;
 pub mod call;
 
 impl_retriable_request!(
-    CreateEmailRequest,
+    CreateMailRequest,
     Mq9ServiceClient<Channel>,
-    CreateEmailReply,
-    create_email,
+    CreateMailReply,
+    create_mail,
     "Mq9Service",
-    "CreateEmail",
+    "CreateMail",
     true
 );
 
 impl_retriable_request!(
-    DeleteEmailRequest,
+    DeleteMailRequest,
     Mq9ServiceClient<Channel>,
-    DeleteEmailReply,
-    delete_email,
+    DeleteMailReply,
+    delete_mail,
     "Mq9Service",
-    "DeleteEmail",
+    "DeleteMail",
     true
 );
 
 impl_retriable_request!(
-    ListEmailRequest,
+    ListMailRequest,
     Mq9ServiceClient<Channel>,
-    Streaming<ListEmailReply>,
-    list_email,
+    Streaming<ListMailReply>,
+    list_mail,
     "Mq9Service",
-    "ListEmail",
+    "ListMail",
+    true
+);
+
+impl_retriable_request!(
+    CreateAgentRequest,
+    Mq9ServiceClient<Channel>,
+    CreateAgentReply,
+    create_agent,
+    "Mq9Service",
+    "CreateAgent",
+    true
+);
+
+impl_retriable_request!(
+    DeleteAgentRequest,
+    Mq9ServiceClient<Channel>,
+    DeleteAgentReply,
+    delete_agent,
+    "Mq9Service",
+    "DeleteAgent",
+    true
+);
+
+impl_retriable_request!(
+    ListAgentRequest,
+    Mq9ServiceClient<Channel>,
+    Streaming<ListAgentReply>,
+    list_agent,
+    "Mq9Service",
+    "ListAgent",
+    true
+);
+
+impl_retriable_request!(
+    SearchAgentRequest,
+    Mq9ServiceClient<Channel>,
+    SearchAgentReply,
+    search_agent,
+    "Mq9Service",
+    "SearchAgent",
     true
 );

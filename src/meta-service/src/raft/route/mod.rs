@@ -237,16 +237,6 @@ impl DataRoute {
                 self.route_mqtt.delete_topic(storage_data.value.clone())?;
                 Ok(None)
             }
-            StorageDataType::MqttSetRetainMessage => {
-                self.route_mqtt
-                    .set_retain_message(storage_data.value.clone())?;
-                Ok(None)
-            }
-            StorageDataType::MqttDeleteRetainMessage => {
-                self.route_mqtt
-                    .delete_retain_message(storage_data.value.clone())?;
-                Ok(None)
-            }
             StorageDataType::MqttSetSession => {
                 self.route_mqtt
                     .create_session(storage_data.value.clone())
@@ -257,12 +247,6 @@ impl DataRoute {
                 self.route_mqtt.delete_session(storage_data.value.clone())?;
                 Ok(None)
             }
-            StorageDataType::MqttSaveLastWillMessage => {
-                self.route_mqtt
-                    .save_last_will_message(storage_data.value.clone())?;
-                Ok(None)
-            }
-
             StorageDataType::MqttCreateTopicRewriteRule => {
                 self.route_mqtt
                     .create_topic_rewrite_rule(storage_data.value.clone())?;
@@ -301,6 +285,16 @@ impl DataRoute {
                     .delete_group_leader(storage_data.value.clone())?;
                 Ok(None)
             }
+            StorageDataType::MqttAddGroupMember => {
+                self.route_mqtt
+                    .add_group_member(storage_data.value.clone())?;
+                Ok(None)
+            }
+            StorageDataType::MqttDeleteGroupMember => {
+                self.route_mqtt
+                    .delete_group_member(storage_data.value.clone())?;
+                Ok(None)
+            }
 
             // auto subscribe
             StorageDataType::MqttCreateAutoSubscribeRule => {
@@ -326,12 +320,20 @@ impl DataRoute {
             }
 
             // mq9
-            StorageDataType::Mq9CreateEmail => {
-                self.route_mq9.create_email(storage_data.value.clone())?;
+            StorageDataType::Mq9CreateMail => {
+                self.route_mq9.create_mail(storage_data.value.clone())?;
                 Ok(None)
             }
-            StorageDataType::Mq9DeleteEmail => {
-                self.route_mq9.delete_email(storage_data.value.clone())?;
+            StorageDataType::Mq9DeleteMail => {
+                self.route_mq9.delete_mail(storage_data.value.clone())?;
+                Ok(None)
+            }
+            StorageDataType::Mq9CreateAgent => {
+                self.route_mq9.create_agent(storage_data.value.clone())?;
+                Ok(None)
+            }
+            StorageDataType::Mq9DeleteAgent => {
+                self.route_mq9.delete_agent(storage_data.value.clone())?;
                 Ok(None)
             }
         }

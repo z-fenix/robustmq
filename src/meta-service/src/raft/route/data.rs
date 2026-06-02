@@ -73,11 +73,8 @@ pub enum StorageDataType {
     MqttDeleteUser,
     MqttSetTopic,
     MqttDeleteTopic,
-    MqttSetRetainMessage,
-    MqttDeleteRetainMessage,
     MqttSetSession,
     MqttDeleteSession,
-    MqttSaveLastWillMessage,
     MqttSetAcl,
     MqttDeleteAcl,
     MqttSetBlacklist,
@@ -92,14 +89,18 @@ pub enum StorageDataType {
     MqttDeleteAutoSubscribeRule,
     MqttSetGroupLeader,
     MqttDeleteGroupLeader,
+    MqttAddGroupMember,
+    MqttDeleteGroupMember,
 
     // nats
     NatsSetSubscribe,
     NatsDeleteSubscribe,
 
     // mq9
-    Mq9CreateEmail,
-    Mq9DeleteEmail,
+    Mq9CreateMail,
+    Mq9DeleteMail,
+    Mq9CreateAgent,
+    Mq9DeleteAgent,
 }
 
 impl fmt::Display for StorageDataType {
@@ -139,11 +140,8 @@ impl fmt::Display for StorageDataType {
             StorageDataType::MqttDeleteUser => write!(f, "MqttDeleteUser"),
             StorageDataType::MqttSetTopic => write!(f, "MqttSetTopic"),
             StorageDataType::MqttDeleteTopic => write!(f, "MqttDeleteTopic"),
-            StorageDataType::MqttSetRetainMessage => write!(f, "MqttSetRetainMessage"),
-            StorageDataType::MqttDeleteRetainMessage => write!(f, "MqttDeleteRetainMessage"),
             StorageDataType::MqttSetSession => write!(f, "MqttSetSession"),
             StorageDataType::MqttDeleteSession => write!(f, "MqttDeleteSession"),
-            StorageDataType::MqttSaveLastWillMessage => write!(f, "MqttSaveLastWillMessage"),
             StorageDataType::MqttSetAcl => write!(f, "MqttSetAcl"),
             StorageDataType::MqttDeleteAcl => write!(f, "MqttDeleteAcl"),
             StorageDataType::MqttSetBlacklist => write!(f, "MqttSetBlacklist"),
@@ -166,12 +164,20 @@ impl fmt::Display for StorageDataType {
             StorageDataType::MqttDeleteGroupLeader => {
                 write!(f, "MqttDeleteGroupLeader")
             }
+            StorageDataType::MqttAddGroupMember => {
+                write!(f, "MqttAddGroupMember")
+            }
+            StorageDataType::MqttDeleteGroupMember => {
+                write!(f, "MqttDeleteGroupMember")
+            }
 
             StorageDataType::NatsSetSubscribe => write!(f, "NatsSetSubscribe"),
             StorageDataType::NatsDeleteSubscribe => write!(f, "NatsDeleteSubscribe"),
 
-            StorageDataType::Mq9CreateEmail => write!(f, "Mq9CreateEmail"),
-            StorageDataType::Mq9DeleteEmail => write!(f, "Mq9DeleteEmail"),
+            StorageDataType::Mq9CreateMail => write!(f, "Mq9CreateMail"),
+            StorageDataType::Mq9DeleteMail => write!(f, "Mq9DeleteMail"),
+            StorageDataType::Mq9CreateAgent => write!(f, "Mq9CreateAgent"),
+            StorageDataType::Mq9DeleteAgent => write!(f, "Mq9DeleteAgent"),
         }
     }
 }

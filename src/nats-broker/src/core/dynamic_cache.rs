@@ -17,7 +17,9 @@ use crate::push::manager::NatsSubscribeManager;
 use crate::push::parse::{ParseAction, ParseSubscribeData, SubscribeSource};
 use common_base::error::common::CommonError;
 use common_base::utils::serialize;
-use metadata_struct::mq9::email::MQ9Email;
+use grpc_clients::pool::ClientPool;
+use metadata_struct::mq9::agent::MQ9Agent;
+use metadata_struct::mq9::mail::MQ9Mail;
 use metadata_struct::nats::subscribe::NatsSubscribe;
 use protocol::broker::broker::{
     BrokerUpdateCacheActionType, BrokerUpdateCacheResourceType, UpdateCacheRecord,
@@ -27,6 +29,7 @@ use std::sync::Arc;
 pub async fn update_nats_cache_metadata(
     cache_manager: &Arc<NatsCacheManager>,
     subscribe_manager: &Arc<NatsSubscribeManager>,
+    _client_pool: &Arc<ClientPool>,
     record: &UpdateCacheRecord,
 ) -> Result<(), CommonError> {
     match record.resource_type() {
@@ -43,7 +46,6 @@ pub async fn update_nats_cache_metadata(
                 }
                 BrokerUpdateCacheActionType::Delete => {
                     subscribe_manager.remove_subscribe(subscribe.connect_id, &subscribe.sid);
-                    subscribe_manager.remove_push_by_sid(subscribe.connect_id, &subscribe.sid);
                     ParseSubscribeData::new_subscribe(
                         ParseAction::Remove,
                         SubscribeSource::NatsCore,
@@ -54,18 +56,30 @@ pub async fn update_nats_cache_metadata(
             subscribe_manager.send_parse_event(data).await;
         }
 
-        BrokerUpdateCacheResourceType::Mq9Email => {
-            let email: MQ9Email = serialize::deserialize(&record.data)?;
+        BrokerUpdateCacheResourceType::Mq9Mail => {
+            let mail: MQ9Mail = serialize::deserialize(&record.data)?;
             match record.action_type() {
                 BrokerUpdateCacheActionType::Create | BrokerUpdateCacheActionType::Update => {
-                    cache_manager.add_mail(email);
+                    cache_manager.add_mail(mail);
                 }
                 BrokerUpdateCacheActionType::Delete => {
-                    cache_manager.remove_mail(&email.tenant, &email.mail_id);
-                    // mail id is globally unique. Once the metadata of a mail is deleted,
-                    // there will be no duplicate mail ids in the future.
+                    cache_manager.remove_mail(&mail.tenant, &mail.mail_address);
+                    // mail address is globally unique. Once the metadata of a mail is deleted,
+                    // there will be no duplicate mail addresss in the future.
                     // That is to say, data will no longer be written to this mail and will not be consumed.
                     // At this point, the underlying data will naturally expire.
+                }
+            }
+        }
+
+        BrokerUpdateCacheResourceType::Mq9Agent => {
+            let agent: MQ9Agent = serialize::deserialize(&record.data)?;
+            match record.action_type() {
+                BrokerUpdateCacheActionType::Create | BrokerUpdateCacheActionType::Update => {
+                    cache_manager.add_agent(agent);
+                }
+                BrokerUpdateCacheActionType::Delete => {
+                    cache_manager.remove_agent(&agent.tenant, &agent.name);
                 }
             }
         }

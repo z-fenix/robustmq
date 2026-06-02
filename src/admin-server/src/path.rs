@@ -22,6 +22,9 @@
 pub const HEALTH_READY_PATH: &str = "/health/ready";
 pub const HEALTH_NODE_PATH: &str = "/health/node";
 pub const HEALTH_CLUSTER_PATH: &str = "/health/cluster";
+pub const DEBUG_PPROF_FLAMEGRAPH_PATH: &str = "/debug/pprof/flamegraph";
+pub const METRICS_PATH: &str = "/metrics";
+pub const CLUSTER_INFO: &str = "/info";
 
 // ── /cluster ─────────────────────────────────────────────────────────────────
 
@@ -122,9 +125,14 @@ pub const TENANT_CREATE_PATH: &str = "/cluster/tenant/create";
 pub const TENANT_UPDATE_PATH: &str = "/cluster/tenant/update";
 pub const TENANT_DELETE_PATH: &str = "/cluster/tenant/delete";
 
+// Cluster Share Group API paths
+pub const CLUSTER_SHARE_GROUP_LIST_PATH: &str = "/cluster/share-group/list";
+pub const CLUSTER_SHARE_GROUP_DETAIL_PATH: &str = "/cluster/share-group/detail";
+
 // ── /mq9 ─────────────────────────────────────────────────────────────────────
 
 pub const MQ9_MAIL_LIST_PATH: &str = "/mq9/mail/list";
+pub const MQ9_AGENT_LIST_PATH: &str = "/mq9/agent/list";
 
 // ── MCP ───────────────────────────────────────────────────────────────────────
 

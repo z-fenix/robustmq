@@ -22,6 +22,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 network-server.workspace = true
+delay-message.workspace = true
 protocol.workspace = true
 broker-core.workspace = true
 grpc-clients.workspace = true
@@ -43,3 +44,5 @@ dashmap.workspace = true
 storage-adapter.workspace = true
 mq9-core.workspace = true
 thiserror.workspace = true
+a2a-types.workspace = true
+rule-engine.workspace = true

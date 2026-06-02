@@ -4,7 +4,7 @@
 
 RobustMQ Admin Server 是 HTTP 管理接口服务，提供对 RobustMQ 集群的全面管理功能。
 
-- **基础地址**: `http://localhost:8080`
+- **基础地址**: `http://localhost:58080`
 - **API 前缀**: `/api` (所有管理接口都使用此前缀)
 - **请求方法**: 列表/详情查询使用 `GET`，创建/删除操作使用 `POST`
 - **数据格式**: JSON
@@ -12,6 +12,7 @@ RobustMQ Admin Server 是 HTTP 管理接口服务，提供对 RobustMQ 集群的
 
 ## API 文档导航
 
+- 🔐 **[鉴权说明](AUTH.md)** - 登录接口、JWT token 使用方式及配置
 - 📋 **[集群管理 API](CLUSTER.md)** - 集群配置和状态管理
 - 🔧 **[MQTT Broker API](MQTT.md)** - MQTT 代理相关的所有管理接口
 - 🔌 **[连接器 API](Connector.md)** - 连接器管理接口
@@ -179,7 +180,7 @@ RobustMQ Admin Server 是 HTTP 管理接口服务，提供对 RobustMQ 集群的
 ### 集群状态查询
 - **接口**: `GET /api/status`
 - **描述**: 获取集群完整状态信息，包括 RobustMQ 版本、集群名称、启动时间、Broker 节点列表以及 Meta 集群的 Raft 状态
-- **请求参数**: 
+- **请求参数**:
 ```json
 {}
 ```
@@ -353,13 +354,13 @@ RobustMQ Admin Server 是 HTTP 管理接口服务，提供对 RobustMQ 集群的
 ### 基本请求示例
 ```bash
 # 获取服务版本
-curl -X GET http://localhost:8080/
+curl -X GET http://localhost:58080/
 
 # 获取集群状态
-curl -X GET http://localhost:8080/api/status
+curl -X GET http://localhost:58080/api/status
 
 # 带分页的列表查询
-curl "http://localhost:8080/api/cluster/user/list?limit=10&page=1&sort_field=username&sort_by=asc"
+curl "http://localhost:58080/api/cluster/user/list?limit=10&page=1&sort_field=username&sort_by=asc"
 ```
 
 ### 错误处理示例
@@ -405,7 +406,7 @@ cargo run --bin admin-server
 ### 测试连接
 ```bash
 # 测试服务是否正常运行
-curl -X GET http://localhost:8080/
+curl -X GET http://localhost:58080/
 ```
 
 ### 日志查看
@@ -416,4 +417,4 @@ curl -X GET http://localhost:8080/
 
 ---
 
-*最后更新: 2026-03-20*
+最后更新: 2026-03-20

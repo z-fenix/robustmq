@@ -103,15 +103,15 @@ extract_version_from_cargo() {
     fi
 
     local version=""
-    
+
     # Method 1: Look for workspace.package version
     version=$(grep -A 10 "^\[workspace\.package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-    
+
     # Method 2: Look for regular package version if workspace version not found
     if [ -z "$version" ]; then
         version=$(grep -A 10 "^\[package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
     fi
-    
+
     # Method 3: Simple fallback
     if [ -z "$version" ]; then
         version=$(grep "^version\s*=" "$cargo_file" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
@@ -138,6 +138,9 @@ detect_current_platform() {
             ;;
         FreeBSD)
             os_type="freebsd"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            os_type="windows"
             ;;
         *)
             log_error "Unsupported OS: $(uname -s)"
@@ -169,7 +172,9 @@ get_rust_target() {
         "darwin-amd64") echo "x86_64-apple-darwin" ;;
         "darwin-arm64") echo "aarch64-apple-darwin" ;;
         "freebsd-amd64") echo "x86_64-unknown-freebsd" ;;
-        *) 
+        "windows-amd64") echo "x86_64-pc-windows-msvc" ;;
+        "windows-arm64") echo "aarch64-pc-windows-msvc" ;;
+        *)
             log_error "Unsupported platform: $platform"
             return 1
             ;;
@@ -211,7 +216,7 @@ check_dependencies() {
             echo
             return 1
         fi
-        
+
         if ! command -v git >/dev/null 2>&1; then
             log_error "git not found. Please install git for frontend repository cloning."
             echo
@@ -236,20 +241,20 @@ build_frontend() {
 
     local frontend_dir="$PROJECT_ROOT/build/robustmq-copilot"
     local frontend_repo="https://github.com/robustmq/robustmq-copilot.git"
-    
+
     # Check if frontend directory exists, if not clone it
     if [ ! -d "$frontend_dir" ]; then
         log_info "Frontend directory not found, cloning from $frontend_repo"
-        
+
         # Ensure build directory exists
         mkdir -p "$PROJECT_ROOT/build"
-        
+
         # Clone the frontend repository
         if ! git clone "$frontend_repo" "$frontend_dir"; then
             log_error "Failed to clone frontend repository from $frontend_repo"
             return 1
         fi
-        
+
         log_success "Frontend repository cloned successfully"
     fi
 
@@ -264,27 +269,15 @@ build_frontend() {
     cd "$PROJECT_ROOT"
 
     cd "$frontend_dir"
-    
+
     if [ ! -f "package.json" ]; then
         log_error "package.json not found in frontend directory"
         return 1
     fi
 
-    # Configure pnpm to use a local store directory to avoid permission issues
-    log_info "Configuring pnpm store directory..."
-    local pnpm_store_dir="$PROJECT_ROOT/build/.pnpm-store"
-    mkdir -p "$pnpm_store_dir"
-    
-    # Set pnpm store path
-    export PNPM_HOME="${PNPM_HOME:-$HOME/.local/share/pnpm}"
-    
-    # Configure pnpm to use local store
-    pnpm config set store-dir "$pnpm_store_dir" 2>/dev/null || true
-    
     log_info "Installing frontend dependencies..."
-    if ! pnpm install --store-dir="$pnpm_store_dir" --no-frozen-lockfile; then
+    if ! pnpm install --no-frozen-lockfile; then
         log_error "Failed to install frontend dependencies"
-        log_error "Store directory: $pnpm_store_dir"
         return 1
     fi
 
@@ -313,9 +306,9 @@ build_server() {
 
     # Build server binaries
     log_info "Building server binaries..."
-    
+
     local cargo_cmd="cargo build --release --target $rust_target"
-    
+
     # Build main server
     if ! $cargo_cmd --bin broker-server; then
         log_error "Failed to build broker-server"
@@ -351,7 +344,23 @@ create_package() {
     mkdir -p "$package_dir"/{bin,libs,config,dist}
 
     # Copy bin directory from source code (scripts, startup files, etc.)
-    if [ -d "$PROJECT_ROOT/bin" ]; then
+    # On Windows the shell scripts in bin/ are not executable; skip them and
+    # leave a note explaining how to start the server directly.
+    if [[ "$platform" == windows-* ]]; then
+        cat > "$package_dir/bin/README.txt" << 'WINEOF'
+Windows users: the shell scripts in this directory are not supported on Windows.
+Start the server directly from the libs/ directory:
+
+  libs\broker-server.exe --config config\server.toml
+
+Management tool:
+  libs\cli-command.exe --help
+
+Benchmark tool:
+  libs\cli-bench.exe --help
+WINEOF
+        log_info "Skipped shell scripts in bin/ for Windows; added README.txt"
+    elif [ -d "$PROJECT_ROOT/bin" ]; then
         cp -r "$PROJECT_ROOT/bin"/* "$package_dir/bin/" 2>/dev/null || true
         log_info "Copied source bin directory"
     fi
@@ -364,7 +373,7 @@ create_package() {
         if [[ "$platform" == windows-* ]]; then
             binary_path="${binary_path}.exe"
         fi
-        
+
         if [ -f "$binary_path" ]; then
             cp "$binary_path" "$package_dir/libs/"
             found_binaries+=("$binary")
@@ -379,19 +388,12 @@ create_package() {
         return 1
     fi
 
-    # Copy only selected configuration directories
-    if [ -d "$PROJECT_ROOT/config/certs" ]; then
-        cp -r "$PROJECT_ROOT/config/certs" "$package_dir/config/" 2>/dev/null || true
-        log_info "Copied config/certs directory"
+    # Copy entire config directory into package
+    if [ -d "$PROJECT_ROOT/config" ]; then
+        cp -r "$PROJECT_ROOT/config"/. "$package_dir/config/" 2>/dev/null || true
+        log_info "Copied config directory"
     else
-        log_warning "config/certs directory not found"
-    fi
-
-    if [ -d "$PROJECT_ROOT/config/template" ]; then
-        cp -r "$PROJECT_ROOT/config/template"/. "$package_dir/config/" 2>/dev/null || true
-        log_info "Copied files from config/template to config/"
-    else
-        log_warning "config/template directory not found"
+        log_warning "config directory not found"
     fi
 
     # Copy LICENSE to root directory
@@ -417,7 +419,7 @@ create_package() {
     if [ -d "$package_dir/dist" ] && [ "$(ls -A "$package_dir/dist" 2>/dev/null)" ]; then
         frontend_status="Included"
     fi
-    
+
     cat > "$package_dir/package-info.txt" << EOF
 Package: robustmq-server
 Version: $version
@@ -435,10 +437,10 @@ EOF
     # Create tarball
     cd "$OUTPUT_DIR"
     local tarball="$package_name.tar.gz"
-    
+
     if tar -czf "$tarball" "$package_name"; then
         log_success "Created package: $tarball"
-        
+
         # Clean up directory
         rm -rf "$package_name"
     else

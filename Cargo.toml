@@ -45,6 +45,7 @@ members = [
     "src/common/healthy",
     "src/common/security",
     "src/common/group",
+    "src/common/search-engine",
     "src/protocol",
     "src/connector",
     "src/storage-engine",
@@ -57,7 +58,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.9"
+version = "0.4.4"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -87,7 +88,8 @@ tokio-util = { version = "0.7.18", default-features = false, features = [
     "rt",
     "time",
 ] }
-futures = "0.3.32"
+futures = "0.3.31"
+lancedb = "0.27"
 futures-util = "0.3.31"
 async-trait = "0.1.88"
 async-stream = "0.3.6"
@@ -212,7 +214,6 @@ nom = { version = "8.0.0", features = ["std"] }
 elasticsearch = { version = "8.19.0-alpha.1", default-features = false }
 paho-mqtt = { version = "0.14.0", default-features = false, features = [
     "bundled",
-    "ssl",
 ] }
 clickhouse = "0.15.0"
 scylla = "1.5.0"
@@ -283,6 +284,7 @@ reqwest = { version = "0.13.2", default-features = false, features = [
     "http2",
 ] }
 genai = "0.5.3"
+fastembed = "4"
 tempfile = "3.27.0"
 chrono = { version = "0.4.44", default-features = false, features = ["std", "clock"] }
 bson = "3.1.0"
@@ -295,6 +297,7 @@ local-ip-address = "0.6.11"
 num_cpus = "1.16"
 chrono-tz = "0.10.3"
 parking_lot = "0.12.5"
+a2a-types = "0.2.0"
 
 # ====================
 # Testing
@@ -361,6 +364,7 @@ llm-engine = { path = "src/common/llm-engine" }
 common-healthy = { path = "src/common/healthy" }
 common-security = { path = "src/common/security" }
 common-group = { path = "src/common/group" }
+search-engine = { path = "src/common/search-engine" }
 # Protocol & Macros
 protocol = { path = "src/protocol" }
 connector = { path = "src/connector" }

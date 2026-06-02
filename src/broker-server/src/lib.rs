@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use amqp_broker::broker::AmqpBrokerServerParams;
+use broker_core::tenant::try_init_default_tenant;
 use broker_core::{
     cache::NodeCacheManager,
     heartbeat::{check_meta_service_status, register_node_and_start_heartbeat},
@@ -29,10 +30,13 @@ use common_config::{broker::broker_config, config::BrokerConfig};
 use common_group::manager::OffsetManager;
 use common_healthy::port::wait_for_grpc_ready;
 use common_metrics::init_metrics;
+use common_security::login::super_user::try_init_system_user;
 use common_security::manager::SecurityManager;
+use delay_message::manager::DelayMessageManager;
 use delay_task::manager::DelayTaskManager;
 use grpc_clients::pool::ClientPool;
 use kafka_broker::broker::KafkaBrokerServerParams;
+use llm_engine::embedding::fastembed;
 use meta_service::MetaServiceServerParams;
 use mqtt_broker::broker::MqttBrokerServerParams;
 use nats_broker::broker::NatsBrokerServerParams;
@@ -43,10 +47,12 @@ use node_call::NodeCallManager;
 use rate_limit::global::GlobalRateLimiterManager;
 use rocksdb_engine::{
     rocksdb::RocksDBEngine,
-    storage::family::{column_family_list, storage_data_fold},
+    storage::family::{column_family_list, rocksdb_data_fold},
 };
+use search_engine::lancedb;
 use std::sync::Arc;
 use storage_adapter::driver::StorageDriverManager;
+use storage_adapter::topic::init_inner_topics;
 use storage_engine::StorageEngineParams;
 use tokio::{runtime::Runtime, sync::broadcast};
 use tracing::error;
@@ -82,8 +88,7 @@ struct BaseComponents {
 pub struct BrokerServer {
     pub(crate) server_runtime: Runtime,
     pub(crate) meta_runtime: Runtime,
-    /// Dedicated runtime for broker tasks; tasks spawned during construction
-    /// (e.g. RetainMessageManager's send thread) land here, not on server_runtime.
+    /// Dedicated runtime for broker tasks.
     pub(crate) broker_runtime: Runtime,
     pub(crate) engine_runtime: Runtime,
     pub(crate) meta_params: MetaServiceServerParams,
@@ -119,11 +124,22 @@ impl BrokerServer {
 
         let (base, meta_runtime, broker_runtime, engine_runtime) = Self::init_base(config);
 
-        let (engine_params, storage_driver_manager, delay_task_manager, meta_params) =
-            Self::init_storage(config, &base, &meta_runtime);
+        let (
+            engine_params,
+            storage_driver_manager,
+            delay_task_manager,
+            delay_message_manager,
+            meta_params,
+        ) = Self::init_storage(config, &base, &meta_runtime);
 
         let (mqtt_params, kafka_params, amqp_params, nats_params, shared_request_channel) =
-            Self::init_protocol_params(config, &base, &storage_driver_manager, &broker_runtime);
+            Self::init_protocol_params(
+                config,
+                &base,
+                &storage_driver_manager,
+                &delay_message_manager,
+                &broker_runtime,
+            );
 
         BrokerServer {
             server_runtime: base.server_runtime,
@@ -155,8 +171,8 @@ impl BrokerServer {
     fn init_base(config: &BrokerConfig) -> (BaseComponents, Runtime, Runtime, Runtime) {
         let client_pool = Arc::new(ClientPool::new(config.runtime.channels_per_address));
         let rocksdb_engine_handler = Arc::new(RocksDBEngine::new(
-            &storage_data_fold(&config.rocksdb.data_path),
-            config.rocksdb.max_open_files,
+            &rocksdb_data_fold(&config.data_path),
+            100000,
             column_family_list(),
         ));
         let global_rate_limiter = Arc::new(
@@ -182,8 +198,7 @@ impl BrokerServer {
             "meta-runtime",
             resolve_meta_worker_threads(config.runtime.meta_worker_threads),
         );
-        // broker_runtime is created here so tasks spawned during MQTT param
-        // construction (e.g. RetainMessageManager) land on broker_runtime.
+        // broker_runtime is created here for broker-specific tasks.
         let broker_runtime = create_runtime(
             "broker-runtime",
             resolve_broker_worker_threads(config.runtime.broker_worker_threads),
@@ -217,6 +232,7 @@ impl BrokerServer {
         StorageEngineParams,
         Arc<StorageDriverManager>,
         Arc<DelayTaskManager>,
+        Arc<DelayMessageManager>,
         MetaServiceServerParams,
     ) {
         let engine_params = engine::build_storage_engine_params(
@@ -249,6 +265,22 @@ impl BrokerServer {
             config.delay_task.delay_task_handler_concurrency,
         ));
 
+        let delay_message_manager = meta_runtime.block_on(async {
+            match DelayMessageManager::new(
+                base.client_pool.clone(),
+                storage_driver_manager.clone(),
+                5,
+            )
+            .await
+            {
+                Ok(m) => Arc::new(m),
+                Err(e) => {
+                    error!("Failed to build delay message manager: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        });
+
         let meta_params = meta_runtime.block_on(meta::build_meta_service(
             base.rocksdb_engine_handler.clone(),
             delay_task_manager.clone(),
@@ -261,6 +293,7 @@ impl BrokerServer {
             engine_params,
             storage_driver_manager,
             delay_task_manager,
+            delay_message_manager,
             meta_params,
         )
     }
@@ -271,6 +304,7 @@ impl BrokerServer {
         config: &BrokerConfig,
         base: &BaseComponents,
         storage_driver_manager: &Arc<StorageDriverManager>,
+        delay_message_manager: &Arc<DelayMessageManager>,
         broker_runtime: &Runtime,
     ) -> (
         MqttBrokerServerParams,
@@ -301,9 +335,9 @@ impl BrokerServer {
                 task_supervisor: base.task_supervisor.clone(),
                 global_limit_manager: base.global_rate_limiter.clone(),
                 node_call: base.node_call_manager.clone(),
-                stop_sx: main_stop_send.clone(),
                 request_channel: shared_request_channel.clone(),
                 security_manager: security_manager.clone(),
+                delay_message_manager: delay_message_manager.clone(),
             },
             broker_runtime,
         );
@@ -338,6 +372,7 @@ impl BrokerServer {
             shared_request_channel: shared_request_channel.clone(),
             storage_driver_manager: storage_driver_manager.clone(),
             security_manager,
+            delay_message_manager: delay_message_manager.clone(),
         });
 
         (
@@ -350,16 +385,15 @@ impl BrokerServer {
     }
 
     pub fn start(&self) {
-        let config = broker_config();
-        let monitor_interval_ms = config.prometheus.monitor_interval_ms;
-
         // Phase 1: Network-facing servers
         self.start_grpc_server();
         self.start_admin_server();
-        self.start_pprof_server();
-        self.start_prometheus_server();
 
         if !wait_for_grpc_ready(self.config.grpc_port) {
+            error!(
+                "GRPC server failed to become ready on port {}, exiting",
+                self.config.grpc_port
+            );
             std::process::exit(1);
         }
 
@@ -373,8 +407,8 @@ impl BrokerServer {
         self.start_load_cache();
 
         // Phase 4: NodeCallManager
-        let (app_stop, _) = broadcast::channel::<bool>(2);
-        let raw_app_stop = app_stop.clone();
+        let (broker_common_stop, _) = broadcast::channel::<bool>(2);
+        let raw_app_stop = broker_common_stop.clone();
         self.server_runtime.block_on(async {
             self.start_node_call_manager(raw_app_stop.clone());
             self.wait_for_node_call_manager_ready().await;
@@ -389,7 +423,7 @@ impl BrokerServer {
                 &client_pool,
                 &broker_cache,
                 &task_supervisor,
-                app_stop.clone(),
+                broker_common_stop.clone(),
             )
             .await;
         });
@@ -397,56 +431,110 @@ impl BrokerServer {
         // Phase 6: Engine service
         let engine_stop_send = self.start_engine_service();
 
-        // Phase 7: Shared handler pool — must start before protocol acceptors begin
-        // pushing packets into the channel.
-        let mqtt_result = self
-            .server_runtime
-            .block_on(async { self.start_mqtt_broker(app_stop.clone()).await });
-        let mqtt_stop_send = mqtt_result.as_ref().map(|(sx, _)| sx.clone());
-        let mqtt_cmd = mqtt_result.map(|(_, cmd)| cmd);
-        let (kafka_cmd, amqp_cmd, nats_cmd) = if is_broker_node(&self.config.roles) {
-            (
-                Some(kafka_broker::handler::command::create_command_with_storage(
-                    self.kafka_params.storage_driver_manager.clone(),
-                )),
-                Some(amqp_broker::handler::command::create_command_with_state(
-                    self.connection_manager.clone(),
-                    self.amqp_params.storage_driver_manager.clone(),
-                )),
-                Some(nats_broker::handler::command::create_command(
-                    self.connection_manager.clone(),
-                    self.nats_params.cache_manager.clone(),
-                    self.nats_params.subscribe_manager.clone(),
-                    self.nats_params.storage_driver_manager.clone(),
-                    self.nats_params.client_pool.clone(),
-                    self.nats_params.security_manager.clone(),
-                )),
-            )
-        } else {
-            (None, None, None)
-        };
-        let commands = CommandRegistry {
+        // Phase 7: Initialize internal topics, default tenant and system user
+        let broker_cache = self.broker_cache.clone();
+        let storage_driver_manager = self.mqtt_params.storage_driver_manager.clone();
+        let client_pool = self.client_pool.clone();
+        self.server_runtime.block_on(async {
+            if let Err(e) = try_init_default_tenant(&broker_cache, &client_pool).await {
+                error!("Failed to initialize default tenant: {}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) =
+                init_inner_topics(&broker_cache, &storage_driver_manager, &client_pool).await
+            {
+                error!("Failed to initialize inner topics: {}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) = try_init_system_user(&client_pool).await {
+                error!("Failed to initialize system user: {}", e);
+                std::process::exit(1);
+            }
+
+            if let Err(e) = fastembed::init() {
+                error!("Failed to initialize fastembed: {}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) = lancedb::init().await {
+                error!("Failed to initialize lancedb: {}", e);
+                std::process::exit(1);
+            }
+        });
+
+        // Phase 8: Start MQTT broker, extract stop sender and command adapter.
+        let (mqtt_stop_send, mqtt_cmd) = self.server_runtime.block_on(async {
+            match self.create_mqtt_server().await {
+                Some((stop_send, server, cmd)) => {
+                    self.spawn_mqtt_broker(server);
+                    (Some(stop_send), Some(cmd))
+                }
+                None => (None, None),
+            }
+        });
+
+        // Phase 9: Build command registry and start handler pool.
+        let (network_handler_stop_send, _) = broadcast::channel(2);
+        let commands = self.create_command_registry(mqtt_cmd);
+        self.server_runtime.block_on(async {
+            self.start_broker_handler_pool(commands, network_handler_stop_send.clone());
+        });
+
+        // Phase 10: Broker protocol acceptors
+        let kafka_stop_send = self.start_kafka_broker();
+        let amqp_stop_send = self.start_amqp_broker();
+        let nats_stop_send = self.start_nats_broker();
+
+        // Phase 11: Background services
+        self.server_runtime.block_on(async {
+            let monitor_interval_ms = 10_000u64;
+            self.start_background_services(broker_common_stop.clone(), monitor_interval_ms)
+                .await;
+        });
+
+        self.awaiting_stop(
+            broker_common_stop,
+            meta_stop_send,
+            network_handler_stop_send,
+            mqtt_stop_send,
+            kafka_stop_send,
+            amqp_stop_send,
+            nats_stop_send,
+            engine_stop_send,
+        );
+    }
+
+    fn create_command_registry(
+        &self,
+        mqtt_cmd: Option<network_server::command::ArcCommandAdapter>,
+    ) -> CommandRegistry {
+        if !is_broker_node(&self.config.roles) {
+            return CommandRegistry::default();
+        }
+
+        let kafka_cmd = Some(kafka_broker::handler::command::create_command_with_storage(
+            self.kafka_params.storage_driver_manager.clone(),
+            self.broker_cache.clone(),
+        ));
+        let amqp_cmd = Some(amqp_broker::handler::command::create_command_with_state(
+            self.connection_manager.clone(),
+            self.amqp_params.storage_driver_manager.clone(),
+        ));
+        let nats_cmd = Some(nats_broker::handler::command::create_command(
+            self.connection_manager.clone(),
+            self.nats_params.cache_manager.clone(),
+            self.nats_params.subscribe_manager.clone(),
+            self.nats_params.storage_driver_manager.clone(),
+            self.nats_params.client_pool.clone(),
+            self.nats_params.security_manager.clone(),
+            self.nats_params.delay_message_manager.clone(),
+        ));
+
+        CommandRegistry {
             mqtt: mqtt_cmd,
             kafka: kafka_cmd,
             amqp: amqp_cmd,
             nats: nats_cmd,
             storage_engine: None,
-        };
-        self.server_runtime.block_on(async {
-            self.start_broker_handler_pool(commands, app_stop.clone());
-        });
-
-        // Phase 8: Broker protocol acceptors
-        self.start_kafka_broker(app_stop.clone());
-        self.start_amqp_broker(app_stop.clone());
-        self.start_nats_broker(app_stop.clone());
-
-        // Phase 9: Background services
-        self.server_runtime.block_on(async {
-            self.start_background_services(app_stop.clone(), monitor_interval_ms)
-                .await;
-        });
-
-        self.awaiting_stop(meta_stop_send, mqtt_stop_send, engine_stop_send);
+        }
     }
 }

@@ -15,7 +15,7 @@
 use crate::controller::connector_scheduler::ConnectorScheduler;
 use crate::controller::engine_gc::start_engine_delete_gc_thread;
 use crate::controller::group_gc::start_group_gc_thread;
-use crate::controller::mail_gc::start_email_gc_thread;
+use crate::controller::mail_gc::start_mail_gc_thread;
 use crate::controller::topic_delete::start_topic_delete_thread;
 use crate::core::cache::MetaCacheManager;
 use crate::raft::manager::MultiRaftManager;
@@ -120,12 +120,14 @@ impl BrokerController {
 
         // group offset gc
         let rocksdb_engine_handler = self.rocksdb_engine_handler.clone();
+        let raft_manager = self.raft_manager.clone();
         let call_manager = self.node_call_manager.clone();
         let node_cache = self.node_cache.clone();
         let raw_stop_send = stop_send.clone();
         tokio::spawn(Box::pin(async move {
             start_group_gc_thread(
                 rocksdb_engine_handler,
+                raft_manager,
                 call_manager,
                 node_cache,
                 raw_stop_send,
@@ -133,12 +135,19 @@ impl BrokerController {
             .await;
         }));
 
-        // email gc
+        // mail gc
         let rocksdb_engine_handler = self.rocksdb_engine_handler.clone();
+        let raft_manager = self.raft_manager.clone();
         let call_manager = self.node_call_manager.clone();
         let raw_stop_send = stop_send.clone();
         tokio::spawn(Box::pin(async move {
-            start_email_gc_thread(rocksdb_engine_handler, call_manager, raw_stop_send).await;
+            start_mail_gc_thread(
+                rocksdb_engine_handler,
+                raft_manager,
+                call_manager,
+                raw_stop_send,
+            )
+            .await;
         }));
 
         // topic delete gc

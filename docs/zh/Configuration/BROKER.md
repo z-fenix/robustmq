@@ -16,7 +16,7 @@ RobustMQ 使用 TOML 格式的配置文件来管理系统配置。主配置文�
 
 支持通过环境变量覆盖配置文件中的设置。命名规则：
 
-```
+```text
 ROBUST_MQ_SERVER_{SECTION}_{KEY}
 ```
 
@@ -44,7 +44,7 @@ broker_id = 1
 broker_ip = "127.0.0.1"
 roles = ["broker", "meta"]
 grpc_port = 1228
-http_port = 8080
+http_port = 58080
 
 [meta_addrs]
 1 = "127.0.0.1:1228"
@@ -57,7 +57,7 @@ http_port = 8080
 | `broker_ip` | `string` | 自动获取本机 IP | 节点 IP 地址 |
 | `roles` | `array` | `["broker", "meta"]` | 节点角色列表，可选值：`meta`、`broker`、`engine` |
 | `grpc_port` | `u32` | `1228` | gRPC 服务端口 |
-| `http_port` | `u32` | `8080` | HTTP API 服务端口 |
+| `http_port` | `u32` | `58080` | HTTP API 服务端口 |
 | `meta_addrs` | `table` | `{1 = "127.0.0.1:1228"}` | Meta 节点地址映射，键为节点 ID，值为 `IP:端口` |
 
 ### 部署模式
@@ -84,6 +84,8 @@ tls_key = "./config/certs/key.pem"
 # server_worker_threads = 0
 # meta_worker_threads = 0
 # broker_worker_threads = 0
+# runtime_worker_threads = 1  # 兼容旧版，新版请用各运行时独立配置
+# pprof_enable = false
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -93,6 +95,8 @@ tls_key = "./config/certs/key.pem"
 | `server_worker_threads` | `usize` | `0`（自动） | server-runtime 工作线程数，自动值 = `max(4, CPU核数 / 2)` |
 | `meta_worker_threads` | `usize` | `0`（自动） | meta-runtime 工作线程数，自动值 = `max(4, CPU核数 / 2)` |
 | `broker_worker_threads` | `usize` | `0`（自动） | broker-runtime 工作线程数，自动值 = `CPU核数` |
+| `runtime_worker_threads` | `usize` | `1` | 兼容旧版全局线程倍数，各运行时字段为 0 时作为回退值，新版建议保持默认 |
+| `pprof_enable` | `bool` | `false` | 是否启用内置 pprof 性能分析采集（不依赖独立端口） |
 
 **三个运行时说明：**
 
@@ -119,6 +123,7 @@ heartbeat_check_time_ms = 1000
 raft_write_timeout_sec = 30
 offset_raft_group_num = 1
 data_raft_group_num = 1
+group_offset_expire_sec = 604800
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -128,6 +133,7 @@ data_raft_group_num = 1
 | `raft_write_timeout_sec` | `u64` | `30` | Raft 写操作超时时间（秒） |
 | `offset_raft_group_num` | `u32` | `1` | Offset Raft 分组数量 |
 | `data_raft_group_num` | `u32` | `1` | 数据 Raft 分组数量 |
+| `group_offset_expire_sec` | `u64` | `604800` | 消费组 Offset 过期时间（秒），默认 7 天 |
 
 ---
 
@@ -162,11 +168,11 @@ tcp_port = 1778
 max_segment_size = 1073741824
 io_thread_num = 8
 data_path = []
+expire_scan_task_num = 10
 
 [storage_runtime.network]
 accept_thread_num = 2
 handler_thread_num = 16
-response_thread_num = 4
 queue_size = 1000
 ```
 
@@ -176,6 +182,7 @@ queue_size = 1000
 | `max_segment_size` | `u32` | `1073741824` (1 GB) | 单个 Segment 文件最大大小（字节） |
 | `io_thread_num` | `u32` | `8` | IO 处理线程数 |
 | `data_path` | `array` | `[]` | 数据存储路径列表 |
+| `expire_scan_task_num` | `usize` | `10` | 过期数据扫描并发任务数 |
 
 **[storage_runtime.network] 网络线程配置：**
 
@@ -183,7 +190,6 @@ queue_size = 1000
 |--------|------|--------|------|
 | `accept_thread_num` | `usize` | `2` | 接受连接的线程数 |
 | `handler_thread_num` | `usize` | `16` | 请求处理线程数 |
-| `response_thread_num` | `usize` | `4` | 响应线程数 |
 | `queue_size` | `usize` | `1000` | 内部处理队列大小 |
 
 ---
@@ -192,24 +198,16 @@ queue_size = 1000
 
 ### [kafka_runtime]
 
-Kafka 协议服务网络线程配置。
+Kafka 协议服务配置。
 
 ```toml
-[kafka_runtime.network]
-accept_thread_num = 2
-handler_thread_num = 16
-response_thread_num = 4
-queue_size = 1000
+[kafka_runtime]
+tcp_port = 9095
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `accept_thread_num` | `usize` | `2` | 接受连接的线程数 |
-| `handler_thread_num` | `usize` | `16` | 请求处理线程数 |
-| `response_thread_num` | `usize` | `4` | 响应线程数 |
-| `queue_size` | `usize` | `1000` | 内部处理队列大小 |
-
-> Kafka Broker 固定监听端口 `9095`。
+| `tcp_port` | `u32` | `9095` | Kafka 协议 TCP 监听端口 |
 
 ---
 
@@ -217,24 +215,16 @@ queue_size = 1000
 
 ### [amqp_runtime]
 
-AMQP 协议服务网络线程配置。
+AMQP 协议服务配置。
 
 ```toml
-[amqp_runtime.network]
-accept_thread_num = 2
-handler_thread_num = 16
-response_thread_num = 4
-queue_size = 1000
+[amqp_runtime]
+tcp_port = 5672
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `accept_thread_num` | `usize` | `2` | 接受连接的线程数 |
-| `handler_thread_num` | `usize` | `16` | 请求处理线程数 |
-| `response_thread_num` | `usize` | `4` | 响应线程数 |
-| `queue_size` | `usize` | `1000` | 内部处理队列大小 |
-
-> AMQP Broker 固定监听端口 `5672`。
+| `tcp_port` | `u32` | `5672` | AMQP 协议 TCP 监听端口 |
 
 ---
 
@@ -358,7 +348,6 @@ is_self_protection_status = false
 [mqtt_runtime.network]
 accept_thread_num = 2
 handler_thread_num = 16
-response_thread_num = 4
 queue_size = 1000
 ```
 
@@ -376,7 +365,6 @@ queue_size = 1000
 |--------|------|--------|------|
 | `accept_thread_num` | `usize` | `2` | 接受连接的线程数 |
 | `handler_thread_num` | `usize` | `16` | 请求处理线程数 |
-| `response_thread_num` | `usize` | `4` | 响应线程数 |
 | `queue_size` | `usize` | `1000` | 内部处理队列大小 |
 
 ---
@@ -415,7 +403,6 @@ MQTT 协议参数配置。
 max_session_expiry_interval = 1800
 default_session_expiry_interval = 30
 topic_alias_max = 65535
-max_qos_flight_message = 2
 max_packet_size = 10485760
 receive_max = 65535
 max_message_expiry_interval = 3600
@@ -427,7 +414,6 @@ client_pkid_persistent = false
 | `max_session_expiry_interval` | `u32` | `1800` | 会话最大过期时间（秒） |
 | `default_session_expiry_interval` | `u32` | `30` | 会话默认过期时间（秒） |
 | `topic_alias_max` | `u16` | `65535` | 主题别名最大数量 |
-| `max_qos_flight_message` | `u8` | `2` | QoS 飞行窗口最大消息数 |
 | `max_packet_size` | `u32` | `10485760` (10 MB) | 单个 MQTT 数据包最大大小（字节） |
 | `receive_max` | `u16` | `65535` | 未确认的 PUBLISH 数据包最大数量 |
 | `max_message_expiry_interval` | `u64` | `3600` | 消息最大过期时间（秒） |
@@ -444,14 +430,14 @@ client_pkid_persistent = false
 ```toml
 [limit.cluster]
 max_connections_per_node = 10000000
-max_create_connection_rate_per_second = 100000
+max_connection_rate = 100000
 max_topics = 5000000
 max_sessions = 50000000
 max_publish_rate = 10000
 
 [limit.tenant]
 max_connections_per_node = 1000000
-max_create_connection_rate_per_second = 10000
+max_connection_rate = 10000
 max_topics = 500000
 max_sessions = 5000000
 max_publish_rate = 10000
@@ -460,7 +446,7 @@ max_publish_rate = 10000
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
 | `max_connections_per_node` | `u64` | 每节点最大连接数 |
-| `max_create_connection_rate_per_second` | `u32` | 每秒最大新建连接速率 |
+| `max_connection_rate` | `u32` | 每秒最大新建连接速率 |
 | `max_topics` | `u64` | 最大 Topic 数量 |
 | `max_sessions` | `u64` | 最大 Session 数量 |
 | `max_publish_rate` | `u32` | 每秒最大 Publish 消息速率 |
@@ -577,6 +563,7 @@ log_level = "info"
 enable = false
 os_cpu_high_watermark = 70.0
 os_memory_high_watermark = 80.0
+system_topic_interval_ms = 60000
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -584,6 +571,88 @@ os_memory_high_watermark = 80.0
 | `enable` | `bool` | `false` | 是否启用系统资源监控 |
 | `os_cpu_high_watermark` | `f32` | `70.0` | CPU 使用率高水位线（%） |
 | `os_memory_high_watermark` | `f32` | `80.0` | 内存使用率高水位线（%） |
+| `system_topic_interval_ms` | `u64` | `60000` | 系统 Topic 指标发布间隔（毫秒） |
+
+---
+
+## 19b. 延迟任务配置
+
+### [delay_task]
+
+延迟消息处理任务队列配置。
+
+```toml
+[delay_task]
+delay_task_queue_num = 100
+delay_task_handler_concurrency = 100
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `delay_task_queue_num` | `usize` | `100` | 延迟任务队列数量 |
+| `delay_task_handler_concurrency` | `usize` | `100` | 延迟任务处理并发数 |
+
+---
+
+## 19c. NATS 运行时配置
+
+### [nats_runtime]
+
+NATS/mq9 协议服务配置。
+
+```toml
+[nats_runtime]
+tcp_port = 4222
+tls_port = 4223
+ws_port = 4080
+wss_port = 4443
+max_payload = 1048576
+auth_required = false
+ping_interval = 60
+ping_max = 3
+ping_send_chunk = 10000
+core_shard_num = 10
+push_thread_num = 1
+push_queue_thread_num = 10
+mq9_mailbox_default_ttl = 86400
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `tcp_port` | `u32` | `4222` | NATS TCP 监听端口 |
+| `tls_port` | `u32` | `4223` | NATS TLS 监听端口 |
+| `ws_port` | `u32` | `4080` | NATS WebSocket 监听端口 |
+| `wss_port` | `u32` | `4443` | NATS WebSocket Secure 监听端口 |
+| `max_payload` | `u64` | `1048576` (1 MB) | 单条消息最大 payload 大小（字节） |
+| `auth_required` | `bool` | `false` | 是否要求客户端认证 |
+| `ping_interval` | `u64` | `60` | 服务端主动发送 PING 的间隔（秒） |
+| `ping_max` | `u64` | `3` | 最大未回应 PING 次数，超过后断开连接 |
+| `ping_send_chunk` | `usize` | `10000` | 发送 PING 时每批处理的连接数 |
+| `core_shard_num` | `usize` | `10` | 内部核心分片数量 |
+| `push_thread_num` | `usize` | `1` | 直接推送线程数（每个 bucket 一个线程） |
+| `push_queue_thread_num` | `usize` | `10` | 队列推送线程数（每个队列组 bucket 一个线程） |
+| `mq9_mailbox_default_ttl` | `u64` | `86400` | mq9 Mailbox 默认 TTL（秒），客户端未指定时使用 |
+
+---
+
+## 19d. Broker 网络配置
+
+### [broker_network]
+
+Broker 内部通用网络线程配置。
+
+```toml
+[broker_network]
+accept_thread_num = 2
+handler_thread_num = 16
+queue_size = 1000
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `accept_thread_num` | `usize` | `2` | 接受连接的线程数 |
+| `handler_thread_num` | `usize` | `16` | 请求处理线程数 |
+| `queue_size` | `usize` | `1000` | 内部处理队列大小 |
 
 ---
 
@@ -634,6 +703,8 @@ model = "gpt-4o-mini"
 token = "your_api_token"
 # 可选：用于 OpenAI 兼容网关或私有部署
 # base_url = "https://api.openai.com/v1/"
+# embedding = "text-embedding-3-small"
+# embedding_model_path = "./models/embedding"
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -642,6 +713,8 @@ token = "your_api_token"
 | `model` | `string` | 无 | 模型名称，如 `gpt-4o-mini`、`claude-3-5-sonnet`、`gemini-2.0-flash` |
 | `token` | `string` | 无 | 访问令牌。除 `ollama` 外其余平台必填 |
 | `base_url` | `string` | 无 | 自定义 API 基地址（可选） |
+| `embedding` | `string` | 无 | Embedding 模型名称（可选） |
+| `embedding_model_path` | `string` | 无 | 本地 Embedding 模型文件路径（可选） |
 
 **`base_url` 说明（重点）：**
 
@@ -691,7 +764,37 @@ export ROBUST_MQ_SERVER_LLM_CLIENT_TOKEN=your_api_token
 
 ---
 
-## 22. 监控配置
+## 22. Admin HTTP API 鉴权配置
+
+### [admin]
+
+Admin HTTP API 的登录认证配置。详细说明请参考 [API 鉴权文档](../Api/AUTH.md)。
+
+```toml
+[admin]
+username = "admin"
+password = "admin"
+jwt_secret = "robustmq-change-me-in-production"
+token_ttl_hours = 8
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `username` | `string` | `"admin"` | 管理员用户名 |
+| `password` | `string` | `"admin"` | 管理员密码，生产环境务必修改 |
+| `jwt_secret` | `string` | `"robustmq-change-me-in-production"` | JWT 签名密钥（HMAC-SHA256），生产环境务必修改为随机字符串（建议 32 位以上） |
+| `token_ttl_hours` | `u64` | `8` | Token 有效期（小时） |
+
+> ⚠️ **安全提示**：`password` 和 `jwt_secret` 使用默认值存在安全风险，生产部署前请务必修改。
+
+**鉴权规则：**
+- 来自 `127.0.0.1` / `::1` 的本地请求：**无需 token**，直接放行
+- 来自其他 IP 的远程请求：需携带 `Authorization: Bearer <token>`
+- `/api/v1/login`、`/health/*`、`/metrics` 路径：始终公开，无需鉴权
+
+---
+
+## 23. 监控配置
 
 ### [prometheus]
 
@@ -735,7 +838,7 @@ cluster_name = "production-cluster"
 broker_id = 1
 roles = ["meta", "broker", "engine"]
 grpc_port = 1228
-http_port = 8080
+http_port = 58080
 
 [meta_addrs]
 1 = "192.168.1.10:1228"
@@ -757,6 +860,7 @@ heartbeat_check_time_ms = 1000
 raft_write_timeout_sec = 30
 offset_raft_group_num = 1
 data_raft_group_num = 1
+group_offset_expire_sec = 604800
 
 # ========== RocksDB ==========
 [rocksdb]
@@ -768,26 +872,37 @@ max_open_files = 20000
 tcp_port = 1778
 max_segment_size = 1073741824
 io_thread_num = 8
+expire_scan_task_num = 10
 
 [storage_runtime.network]
 accept_thread_num = 2
 handler_thread_num = 16
-response_thread_num = 4
 queue_size = 1000
 
 # ========== Kafka 运行时 ==========
-[kafka_runtime.network]
-accept_thread_num = 2
-handler_thread_num = 16
-response_thread_num = 4
-queue_size = 1000
+[kafka_runtime]
+tcp_port = 9095
 
 # ========== AMQP 运行时 ==========
-[amqp_runtime.network]
-accept_thread_num = 2
-handler_thread_num = 16
-response_thread_num = 4
-queue_size = 1000
+[amqp_runtime]
+tcp_port = 5672
+
+# ========== NATS 运行时 ==========
+[nats_runtime]
+tcp_port = 4222
+tls_port = 4223
+ws_port = 4080
+wss_port = 4443
+max_payload = 1048576
+auth_required = false
+ping_interval = 60
+ping_max = 3
+mq9_mailbox_default_ttl = 86400
+
+# ========== 延迟任务 ==========
+[delay_task]
+delay_task_queue_num = 100
+delay_task_handler_concurrency = 100
 
 # ========== 消息存储 ==========
 [message_storage]
@@ -816,7 +931,6 @@ is_self_protection_status = false
 [mqtt_runtime.network]
 accept_thread_num = 2
 handler_thread_num = 16
-response_thread_num = 4
 queue_size = 1000
 
 # ========== MQTT Keep Alive ==========
@@ -831,7 +945,6 @@ default_timeout = 2
 max_session_expiry_interval = 1800
 default_session_expiry_interval = 30
 topic_alias_max = 65535
-max_qos_flight_message = 2
 max_packet_size = 10485760
 receive_max = 65535
 max_message_expiry_interval = 3600
@@ -869,6 +982,7 @@ log_level = "info"
 enable = false
 os_cpu_high_watermark = 70.0
 os_memory_high_watermark = 80.0
+system_topic_interval_ms = 60000
 
 # ========== 监控 ==========
 [prometheus]
@@ -890,6 +1004,15 @@ platform = "open_ai"
 model = "gpt-4o-mini"
 token = "your_api_token"
 # base_url = "https://api.openai.com/v1/"
+# embedding = "text-embedding-3-small"
+# embedding_model_path = "./models/embedding"
+
+# ========== Admin 鉴权 ==========
+[admin]
+username = "admin"
+password = "your_secure_password"
+jwt_secret = "your-random-jwt-secret-32-chars-min"
+token_ttl_hours = 8
 
 # ========== 日志 ==========
 [log]

@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use common_base::{
-    error::{common::CommonError, ResultCommonError},
+    error::ResultCommonError,
     task::{TaskKind, TaskSupervisor},
     tools::loop_select_ticket,
 };
 use common_config::broker::broker_config;
 use grpc_clients::pool::ClientPool;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -50,6 +49,7 @@ pub async fn register_node_and_start_heartbeat(
         Ok(()) => {
             let raw_client_pool = client_pool.clone();
             let broker_cache = cache_manager.clone();
+
             task_supervisor.spawn(
                 TaskKind::BrokerNodeHeartbeat.to_string(),
                 Box::pin(async move {
@@ -69,17 +69,21 @@ pub async fn report_heartbeat(
     cache_manager: &Arc<NodeCacheManager>,
     stop_send: broadcast::Sender<bool>,
 ) {
+    let config = broker_config();
+    info!(
+        "Heartbeat task started for node {}, reporting every 3s",
+        config.broker_id
+    );
+
     let ac_fn = async || -> ResultCommonError {
         let cluster_storage = ClusterStorage::new(client_pool.clone());
         let config = broker_config();
 
-        // Send heartbeat with 1 second timeout
         match timeout(Duration::from_secs(3), cluster_storage.heartbeat()).await {
             Ok(Ok(())) => {
                 debug!("Heartbeat report success for node {}", config.broker_id);
             }
             Ok(Err(e)) => {
-                // Heartbeat failed
                 if e.to_string().contains("Node") && e.to_string().contains("does not exist") {
                     warn!(
                         "Node {} does not exist in Meta Service, attempting to re-register",
@@ -118,81 +122,19 @@ pub async fn report_heartbeat(
     loop_select_ticket(ac_fn, 3000, &stop_send).await;
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-struct MetaServiceStatus {
-    pub running_state: serde_json::Value,
-    pub current_leader: u64,
-}
-
-impl MetaServiceStatus {
-    /// A state machine is ready when:
-    /// 1. `running_state` is `{"Ok": ...}` (no error)
-    /// 2. `current_leader != 0` (a leader has been elected)
-    fn is_ready(&self) -> bool {
-        let running_ok = self
-            .running_state
-            .as_object()
-            .map(|m| m.contains_key("Ok"))
-            .unwrap_or(false);
-        running_ok && self.current_leader != 0
-    }
-}
-
 pub async fn check_meta_service_status(client_pool: Arc<ClientPool>) {
-    let fun = async move || -> Result<Option<bool>, CommonError> {
-        let cluster_storage = ClusterStorage::new(client_pool.clone());
-        let data = cluster_storage.meta_cluster_status().await?;
-
-        // The status JSON is a map of raft shard name -> MetaServiceStatus,
-        // e.g. {"metadata_0": {...}, "offset_3": {...}, "data_7": {...}}.
-        // The cluster is ready only when every shard is ready.
-        let shard_statuses: std::collections::BTreeMap<String, MetaServiceStatus> =
-            serde_json::from_str(&data)?;
-
-        if shard_statuses.is_empty() {
-            return Ok(None);
-        }
-
-        let not_ready: Vec<String> = shard_statuses
-            .iter()
-            .filter(|(_, s)| !s.is_ready())
-            .map(|(name, s)| {
-                format!(
-                    "{}(running_state={}, leader={})",
-                    name, s.running_state, s.current_leader
-                )
-            })
-            .collect();
-
-        if not_ready.is_empty() {
-            let summary: Vec<String> = shard_statuses
-                .iter()
-                .map(|(name, s)| format!("{}→node{}", name, s.current_leader))
-                .collect();
-            info!(
-                "Meta Service cluster is ready. All raft shards have elected a leader: [{}]",
-                summary.join(", ")
-            );
-            return Ok(Some(true));
-        }
-
-        let total = shard_statuses.len();
-        let ready = total - not_ready.len();
-        info!(
-            "Meta Service cluster not ready yet: {}/{} shards ready. Not ready: {:?}",
-            ready, total, not_ready
-        );
-        Ok(None)
-    };
-
     loop {
-        match fun().await {
-            Ok(Some(true)) => break,
-            Ok(_) => {
-                sleep(Duration::from_secs(1)).await;
+        let cluster_storage = ClusterStorage::new(client_pool.clone());
+        match cluster_storage.raft_ping().await {
+            Ok(()) => {
+                info!("Meta Service cluster is ready");
+                break;
             }
             Err(e) => {
-                info!("Meta Service cluster is not yet ready: {}", e);
+                info!(
+                    "Waiting for Meta Service cluster to be ready ({}), retrying in 1s...",
+                    e
+                );
                 sleep(Duration::from_secs(1)).await;
             }
         }

@@ -18,16 +18,6 @@ service MqttService {
   rpc ListTopic(ListTopicRequest) returns (stream ListTopicReply) {}
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicReply) {}
   rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicReply) {}
-  rpc SetTopicRetainMessage(SetTopicRetainMessageRequest) returns (SetTopicRetainMessageReply) {}
-  rpc GetTopicRetainMessage(GetTopicRetainMessageRequest) returns (GetTopicRetainMessageReply) {}
-
-  // Share Subscription
-  rpc GetShareSubLeader(GetShareSubLeaderRequest) returns (GetShareSubLeaderReply) {}
-
-  // Last Will
-  rpc SaveLastWillMessage(SaveLastWillMessageRequest) returns (SaveLastWillMessageReply) {}
-  rpc GetLastWillMessage(GetLastWillMessageRequest) returns (GetLastWillMessageReply) {}
-
   // ACL
   rpc ListAcl(ListAclRequest) returns (ListAclReply) {}
   rpc CreateAcl(CreateAclRequest) returns (CreateAclReply) {}
@@ -61,21 +51,6 @@ service MqttService {
   rpc ListAutoSubscribeRule(ListAutoSubscribeRuleRequest) returns (ListAutoSubscribeRuleReply) {}
 }
 
-message GetShareSubLeaderRequest {
-  string tenant = 1;
-  repeated string group_list = 2;
-}
-
-message GetShareSubLeaderReply {
-  repeated SubLeaderInfo leader = 1;
-}
-
-message SubLeaderInfo{
-  string group_name = 1;
-  uint64 broker_id = 2;
-  string broker_addr = 3;
-  bytes extend_info = 4;
-}
 
 message ListUserRequest {
   string tenant = 1;
@@ -125,23 +100,6 @@ message DeleteTopicRequest {
 
 message DeleteTopicReply {}
 
-message SetTopicRetainMessageRequest {
-  string tenant = 1;
-  string topic_name = 2 [(validate.rules).string.min_len = 1];
-  optional bytes retain_message = 3;
-}
-
-message SetTopicRetainMessageReply {}
-
-message GetTopicRetainMessageRequest {
-  string tenant = 1;
-  string topic_name = 2 [(validate.rules).string.min_len = 1];
-}
-
-message GetTopicRetainMessageReply {
-  optional bytes retain_message = 1;
-}
-
 message ListSessionRequest {
   string tenant = 1;
   string client_id = 2;
@@ -168,21 +126,6 @@ message DeleteSessionRequest {
 }
 
 message DeleteSessionReply {}
-
-message SaveLastWillMessageRequest {
-  string client_id = 2 [(validate.rules).string.min_len = 1];
-  bytes last_will_message = 3 [(validate.rules).bytes.min_len = 1];
-}
-
-message SaveLastWillMessageReply {}
-
-message GetLastWillMessageRequest {
-  string client_id = 2 [(validate.rules).string.min_len = 1];
-}
-
-message GetLastWillMessageReply {
-  bytes message =1;
-}
 
 message ListAclRequest {
   string tenant = 1;

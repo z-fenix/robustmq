@@ -39,7 +39,7 @@ case "${action}" in
     *) echo "Invalid action: ${action}, optional: start, stop"; usage ;;
 esac
 
-[ -z $conf ] && conf=${workdir}/../config/server.toml
+[ -z "$conf" ] && conf=${workdir}/../config/server.toml
 log_file=${workdir}/../logs/robustmq.log
 # Get absolute path for cleaner display
 log_file_abs=$(cd "$(dirname "${log_file}")" && pwd)/$(basename "${log_file}")
@@ -47,7 +47,11 @@ log_file_abs=$(cd "$(dirname "${log_file}")" && pwd)/$(basename "${log_file}")
 start_service() {
   local bin_path="${workdir}/../libs/broker-server"
   [ ! -x "$bin_path" ] && echo "ERROR: $bin_path not found or not executable" && exit 1
-  [ ! -f $conf ] && echo "Config file not found: $conf" && exit 1
+  [ ! -f "$conf" ] && echo "Config file not found: $conf" && exit 1
+
+  # Read http_port from config file, default to 58080 if not found
+  http_port=$(grep -E '^[[:space:]]*http_port[[:space:]]*=' "$conf" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//' | tr -d '[:space:]')
+  [ -z "$http_port" ] && http_port=58080
 
   # Raise the open file descriptor limit to handle large numbers of
   # MQTT connections and gRPC channels without hitting "Too many open files".
@@ -73,7 +77,25 @@ start_service() {
     fi
   fi
 
+  # Write runtime config.js so the frontend picks up the correct API port
+  # without needing a rebuild. The UI uses the current page hostname and
+  # this port to talk to the admin API.
+  config_js="${workdir}/../dist/config.js"
+  if [ -d "${workdir}/../dist" ]; then
+    cat > "${config_js}" << CONFIGEOF
+// Runtime configuration written by robust-server on startup.
+// Do not edit manually; changes will be overwritten on next start.
+window.__APP_CONFIG__ = {
+  api: {
+    port: ${http_port}
+  }
+};
+CONFIGEOF
+    echo "Runtime config written: ${config_js}"
+  fi
+
   echo "Config: $conf"
+  echo "HTTP API port: ${http_port}"
   echo "Starting RobustMQ broker server..."
   nohup "${bin_path}" --conf="${conf}" >> "${log_file}" 2>&1 &
   sleep 3

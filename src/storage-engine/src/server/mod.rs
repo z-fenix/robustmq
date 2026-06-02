@@ -35,8 +35,6 @@ use rate_limit::global::GlobalRateLimiterManager;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::error;
-
 pub mod inner;
 
 pub struct ServerParams {
@@ -106,7 +104,7 @@ impl Server {
         }
     }
 
-    pub async fn start(&self) {
+    pub async fn start(&self) -> Result<(), std::io::Error> {
         let conf = broker_config();
 
         handler_process(
@@ -119,12 +117,14 @@ impl Server {
             self.stop_sx.clone(),
         );
 
-        if let Err(e) = self
-            .tcp_server
+        self.tcp_server
             .start(false, conf.storage_runtime.tcp_port)
             .await
-        {
-            error!("Storage Engine TCP server start fail, error:{}", e);
-        }
+            .map_err(|e| {
+                std::io::Error::other(format!(
+                    "Storage Engine TCP server failed to start on port {}: {}",
+                    conf.storage_runtime.tcp_port, e
+                ))
+            })
     }
 }

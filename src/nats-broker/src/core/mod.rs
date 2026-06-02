@@ -14,10 +14,12 @@
 
 pub mod cache;
 pub mod connection;
+pub mod delay;
 pub mod dynamic_cache;
 pub mod error;
 pub mod keep_alive;
 pub mod mail;
+pub mod queue_name;
 pub mod security;
 pub mod subject;
 pub mod tenant;

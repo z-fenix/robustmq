@@ -13,7 +13,11 @@
 // limitations under the License.
 
 use bytes::Bytes;
-use common_base::{tools::now_second, utils::crc::calc_crc32};
+use common_base::{
+    error::common::CommonError,
+    tools::now_second,
+    utils::{crc::calc_crc32, serialize},
+};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +38,7 @@ pub struct StorageRecordMetadata {
     pub key: Option<String>,
     pub tags: Option<Vec<String>>,
     pub create_t: u64,
+    pub expire_at: u64,
     pub crc_num: u32,
 }
 
@@ -48,6 +53,7 @@ impl StorageRecordMetadata {
         Ok(rkyv::from_bytes::<Self, rkyv::rancor::Error>(bytes)?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         offset: u64,
         shard: &str,
@@ -55,6 +61,7 @@ impl StorageRecordMetadata {
         header: &Option<Vec<StorageHeader>>,
         key: &Option<String>,
         tags: &Option<Vec<String>>,
+        expire_at: u64,
         data: &Bytes,
     ) -> Self {
         StorageRecordMetadata {
@@ -66,6 +73,7 @@ impl StorageRecordMetadata {
             tags: tags.clone(),
             create_t: now_second(),
             crc_num: calc_crc32(data),
+            expire_at,
         }
     }
 
@@ -80,6 +88,7 @@ impl StorageRecordMetadata {
             tags: None,
             create_t: now_second(),
             crc_num: 0,
+            expire_at: 0,
         }
     }
 
@@ -142,6 +151,12 @@ impl StorageRecordMetadata {
         self.crc_num = crc_num;
         self
     }
+
+    /// Set expire_at (chainable)
+    pub fn with_expire_at(mut self, expire_at: u64) -> Self {
+        self.expire_at = expire_at;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +164,16 @@ pub struct StorageRecord {
     pub metadata: StorageRecordMetadata,
     pub protocol_data: Option<StorageRecordProtocolData>,
     pub data: Bytes,
+}
+
+impl StorageRecord {
+    pub fn encode(&self) -> Result<Vec<u8>, CommonError> {
+        serialize::serialize(self)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self, CommonError> {
+        serialize::deserialize(data)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -164,7 +189,6 @@ impl StorageRecordProtocolData {}
 pub struct StorageRecordProtocolDataMqtt {
     pub client_id: String,
     pub retain: bool,
-    pub expire_at: u64,
     pub format_indicator: Option<u8>,
     pub response_topic: Option<String>,
     pub correlation_data: Option<Bytes>,
@@ -182,4 +206,5 @@ pub struct StorageRecordProtocolDataNats {
 pub struct StorageRecordProtocolDataMq9 {
     pub priority: String,
     pub header: Option<Bytes>,
+    pub reply_to: Option<String>,
 }

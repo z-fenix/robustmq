@@ -20,20 +20,24 @@ use crate::core::event::{st_report_subscribed_event, st_report_unsubscribed_even
 use crate::core::pkid_manager::{PkidAckEnum, ReceiveQosPkidData};
 use crate::core::security::security_is_allow_subscribe;
 use crate::core::sub_exclusive::{allow_exclusive_subscribe, already_exclusive_subscribe};
+use crate::core::sub_share::{decode_share_info, full_group_name, is_mqtt_share_subscribe};
 use crate::core::sub_wildcards::sub_path_validator;
 use crate::core::subscribe::remove_subscribe;
 use crate::core::subscribe::{save_subscribe, SaveSubscribeContext};
 use crate::subscribe::common::min_qos;
 use crate::subscribe::manager::SubscribeManager;
+use broker_core::share_group::ShareGroupStorage;
 use common_base::tools::now_second;
 use common_security::manager::SecurityManager;
 use metadata_struct::mqtt::connection::MQTTConnection;
+use metadata_struct::mqtt::share_group::ShareGroupParams;
 use protocol::mqtt::common::{
     MqttPacket, MqttProtocol, QoS, SubAck, SubAckProperties, Subscribe, SubscribeProperties,
     SubscribeReasonCode, UnsubAck, UnsubAckProperties, UnsubAckReason, Unsubscribe,
     UnsubscribeProperties,
 };
 use std::sync::Arc;
+use tracing::warn;
 
 impl MqttService {
     pub async fn subscribe(
@@ -95,15 +99,20 @@ impl MqttService {
             );
         }
 
-        if let Err(e) = self
-            .retain_message_manager
-            .try_send_retain_message(
-                &connection.tenant,
-                &connection.client_id,
+        self.ensure_share_groups_exist(&connection.tenant, subscribe)
+            .await;
+
+        if let Err(e) =
+            crate::core::retain::try_send_retain_message(crate::core::retain::SendRetainContext {
+                storage_driver_manager: &self.storage_driver_manager,
+                cache_manager: &self.cache_manager,
+                connection_manager: &self.connection_manager,
+                subscribe_manager: &self.subscribe_manager,
+                tenant: &connection.tenant,
+                client_id: &connection.client_id,
                 subscribe,
-                &self.cache_manager,
-                &self.subscribe_manager,
-            )
+                stop_sx: &self.stop_sx,
+            })
             .await
         {
             return response_packet_mqtt_sub_ack(
@@ -221,6 +230,40 @@ impl MqttService {
             vec![UnsubAckReason::Success],
             None,
         )
+    }
+
+    async fn ensure_share_groups_exist(&self, tenant: &str, subscribe: &Subscribe) {
+        for filter in &subscribe.filters {
+            if !is_mqtt_share_subscribe(&filter.path) {
+                continue;
+            }
+            let (group_name, sub_name) = decode_share_info(&filter.path);
+            let group_name_full = full_group_name(&group_name, &sub_name);
+            if self
+                .cache_manager
+                .node_cache
+                .get_share_group(tenant, &group_name_full)
+                .is_some()
+            {
+                continue;
+            }
+            let storage = ShareGroupStorage::new(self.client_pool.clone());
+            if let Err(e) = storage
+                .create(
+                    tenant,
+                    &group_name_full,
+                    ShareGroupParams::MQTT(
+                        metadata_struct::mqtt::share_group::ShareGroupParamsMqtt {},
+                    ),
+                )
+                .await
+            {
+                warn!(
+                    "Failed to create share group '{}' for tenant '{}': {}",
+                    group_name_full, tenant, e
+                );
+            }
+        }
     }
 }
 

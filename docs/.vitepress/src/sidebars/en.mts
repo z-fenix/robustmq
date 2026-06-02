@@ -20,7 +20,7 @@ const items = [
                 ],
             },
             {
-                text: "Version planning",
+                text: "Version Planning",
                 collapsed: true,
                 items: [
                     { text: "2026 RoadMap", link: "/en/OverView/RoadMap-2026" },
@@ -60,6 +60,8 @@ const items = [
             { text: "Storage Adapter", link: "/en/Architect/StorageAdapter-Architecture" },
             { text: "Storage Engine", link: "/en/Architect/StorageEngine-Architecture" },
             { text: "Connector", link: "/en/Architect/Connector-Architecture" },
+            { text: "Multi-Protocol", link: "/en/Architect/MultiProtocol-Architecture" },
+            { text: "Pluggable Storage", link: "/en/Architect/PluggableStorage-Architecture" },
         ],
     },
     {
@@ -146,18 +148,8 @@ const items = [
     ],
   },
   {
-    text: "RobustMQ mq9",
-    collapsed: true,
-    items: [
-      { text: "Overview", link: "/en/mq9/Overview" },
-      { text: "Features", link: "/en/mq9/Features" },
-      { text: "Use Cases", link: "/en/mq9/Scenarios" },
-      { text: "Quick Start", link: "/en/mq9/QuickStart" },
-      { text: "SDK Integration", link: "/en/mq9/SDK" },
-      { text: "LangChain Integration", link: "/en/mq9/LangChain" },
-      { text: "FAQ", link: "/en/mq9/FAQ" },
-      { text: "Roadmap", link: "/en/mq9/Roadmap" },
-    ],
+    text: "ROBUSTMQ MQ9",
+    link: "https://mq9.robustmq.com/docs/overview",
   },
 
   {
@@ -260,6 +252,7 @@ const items = [
           { text: "Cluster API", link: "/en/Api/CLUSTER" },
           { text: "MQTT API", link: "/en/Api/MQTT" },
           { text: "Connector API", link: "/en/Api/Connector" },
+          { text: "MQ9 API", link: "/en/Api/MQ9" },
         ],
       },
       {
@@ -284,7 +277,7 @@ const items = [
     ],
   },
   {
-    text: "ContributionGuide",
+    text: "Contribution Guide",
     collapsed: true,
     items: [
       {
@@ -294,7 +287,7 @@ const items = [
       { text: "PR Example", link: "/en/ContributionGuide/Pull-Request-Example" },
       { text: "AI Skills Guide", link: "/en/ContributionGuide/AI-Skills" },
       {
-        text: "ContributingCode",
+        text: "Contributing Code",
         collapsed: true,
         items: [
           {
@@ -328,7 +321,7 @@ const items = [
         ],
       },
       {
-        text: "ContributingDoc",
+        text: "Contributing Doc",
         collapsed: true,
         items: [
           {
@@ -354,7 +347,5 @@ const items = [
 ]
 
 export const sidebar = {
-  '/en/mq9/index': [],
-  '/en/mq9/': items,
   '/en/': items,
 };

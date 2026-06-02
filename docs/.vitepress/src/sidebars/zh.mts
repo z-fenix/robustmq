@@ -60,6 +60,8 @@ const items = [
             { text: "Storage Adapter", link: "/zh/Architect/StorageAdapter-Architecture" },
             { text: "Storage Engine", link: "/zh/Architect/StorageEngine-Architecture" },
             { text: "Connector", link: "/zh/Architect/Connector-Architecture" },
+            { text: "多协议架构", link: "/zh/Architect/MultiProtocol-Architecture" },
+            { text: "插件化存储", link: "/zh/Architect/PluggableStorage-Architecture" },
         ],
     },
     {
@@ -146,18 +148,8 @@ const items = [
   },
 
   {
-    text: "RobustMQ mq9",
-    collapsed: true,
-    items: [
-      { text: "概览", link: "/zh/mq9/Overview" },
-      { text: "核心功能", link: "/zh/mq9/Features" },
-      { text: "应用场景", link: "/zh/mq9/Scenarios" },
-      { text: "快速开始", link: "/zh/mq9/QuickStart" },
-      { text: "SDK 接入", link: "/zh/mq9/SDK" },
-      { text: "LangChain 集成", link: "/zh/mq9/LangChain" },
-      { text: "常见问题", link: "/zh/mq9/FAQ" },
-      { text: "发展规划", link: "/zh/mq9/Roadmap" },
-    ],
+    text: "ROBUSTMQ MQ9",
+    link: "https://mq9.robustmq.com/zh/docs/overview",
   },
 
   {
@@ -264,6 +256,7 @@ const items = [
           { text: "Cluster API", link: "/zh/Api/CLUSTER" },
           { text: "MQTT API", link: "/zh/Api/MQTT" },
           { text: "Connector API", link: "/zh/Api/Connector" },
+          { text: "MQ9 API", link: "/zh/Api/MQ9" },
         ],
       },
       {
@@ -364,7 +357,5 @@ const items = [
 ]
 
 export const sidebar = {
-  '/zh/mq9/index': [],
-  '/zh/mq9/': items,
   '/zh/': items,
 };

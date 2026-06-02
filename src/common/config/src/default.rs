@@ -15,8 +15,7 @@
 use crate::config::{
     DelayTask, MetaRuntime, MqttFlappingDetect, MqttKeepAlive, MqttOfflineMessage,
     MqttProtocolConfig, MqttRuntime, MqttSchema, MqttServer, MqttSlowSubscribeConfig,
-    MqttSystemMonitor, Network, Rocksdb, Runtime, SchemaFailedOperation, SchemaStrategy,
-    StorageRuntime,
+    MqttSystemMonitor, Network, Runtime, SchemaFailedOperation, SchemaStrategy, StorageRuntime,
 };
 use crate::storage::{StorageAdapterConfig, StorageType};
 use common_base::enum_type::delay_type::DelayType;
@@ -50,7 +49,7 @@ pub fn default_broker_ip() -> Option<String> {
 }
 
 pub fn default_http_port() -> u32 {
-    8080
+    58080
 }
 
 pub fn default_meta_addrs() -> Table {
@@ -71,6 +70,7 @@ pub fn default_runtime() -> Runtime {
         channels_per_address: 4,
         tls_cert: "./config/certs/cert.pem".to_string(),
         tls_key: "./config/certs/key.pem".to_string(),
+        pprof_enable: false,
     }
 }
 
@@ -79,13 +79,6 @@ pub fn default_network() -> Network {
         accept_thread_num: 1,
         handler_thread_num: 64,
         queue_size: 5000,
-    }
-}
-
-pub fn default_rocksdb() -> Rocksdb {
-    Rocksdb {
-        max_open_files: 10000,
-        data_path: "./data".to_string(),
     }
 }
 
@@ -236,11 +229,8 @@ pub fn default_queue_size() -> usize {
 }
 
 // Rocksdb
-pub fn default_rocksdb_data_path() -> String {
+pub fn default_data_path() -> String {
     "./data".to_string()
-}
-pub fn default_rocksdb_max_open_files() -> i32 {
-    10000
 }
 
 // MetaRuntime
@@ -362,14 +352,6 @@ pub fn default_slow_subscribe_record_time() -> u64 {
 }
 pub fn default_slow_subscribe_delay_type() -> DelayType {
     DelayType::Whole
-}
-
-// PProf
-pub fn default_pprof_port() -> u16 {
-    9090
-}
-pub fn default_pprof_frequency() -> i32 {
-    100
 }
 
 // StorageRuntime

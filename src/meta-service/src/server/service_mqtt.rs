@@ -23,18 +23,15 @@ use crate::server::services::mqtt::connector::{
     list_connectors_by_req, update_connector_by_req,
 };
 use crate::server::services::mqtt::session::{
-    create_session_by_req, delete_session_by_req, get_last_will_message_by_req,
-    list_session_by_req, save_last_will_message_by_req,
+    create_session_by_req, delete_session_by_req, list_session_by_req,
 };
-use crate::server::services::mqtt::share_sub::get_share_sub_leader_by_req;
 use crate::server::services::mqtt::subscribe::{
     create_auto_subscribe_rule_by_req, delete_auto_subscribe_rule_by_req, delete_subscribe_by_req,
     list_auto_subscribe_rule_by_req, list_subscribe_by_req, set_subscribe_by_req,
 };
 use crate::server::services::mqtt::topic::{
     create_topic_by_req, create_topic_rewrite_rule_by_req, delete_topic_by_req,
-    delete_topic_rewrite_rule_by_req, get_topic_retain_message_by_req, list_topic_by_req,
-    list_topic_rewrite_rule_by_req, set_topic_retain_message_by_req,
+    delete_topic_rewrite_rule_by_req, list_topic_by_req, list_topic_rewrite_rule_by_req,
 };
 use crate::server::services::mqtt::user::{
     create_user_by_req, delete_user_by_req, list_user_by_req,
@@ -55,16 +52,12 @@ use protocol::meta::meta_service_mqtt::{
     DeleteBlacklistReply, DeleteBlacklistRequest, DeleteConnectorReply, DeleteConnectorRequest,
     DeleteSessionReply, DeleteSessionRequest, DeleteSubscribeReply, DeleteSubscribeRequest,
     DeleteTopicReply, DeleteTopicRequest, DeleteTopicRewriteRuleReply,
-    DeleteTopicRewriteRuleRequest, DeleteUserReply, DeleteUserRequest, GetLastWillMessageReply,
-    GetLastWillMessageRequest, GetShareSubLeaderReply, GetShareSubLeaderRequest,
-    GetTopicRetainMessageReply, GetTopicRetainMessageRequest, ListAclReply, ListAclRequest,
-    ListAutoSubscribeRuleReply, ListAutoSubscribeRuleRequest, ListBlacklistReply,
+    DeleteTopicRewriteRuleRequest, DeleteUserReply, DeleteUserRequest, ListAclReply,
+    ListAclRequest, ListAutoSubscribeRuleReply, ListAutoSubscribeRuleRequest, ListBlacklistReply,
     ListBlacklistRequest, ListConnectorReply, ListConnectorRequest, ListSessionReply,
     ListSessionRequest, ListSubscribeReply, ListSubscribeRequest, ListTopicReply, ListTopicRequest,
     ListTopicRewriteRuleReply, ListTopicRewriteRuleRequest, ListUserReply, ListUserRequest,
-    SaveLastWillMessageReply, SaveLastWillMessageRequest, SetSubscribeReply, SetSubscribeRequest,
-    SetTopicRetainMessageReply, SetTopicRetainMessageRequest, UpdateConnectorReply,
-    UpdateConnectorRequest,
+    SetSubscribeReply, SetSubscribeRequest, UpdateConnectorReply, UpdateConnectorRequest,
 };
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::pin::Pin;
@@ -277,78 +270,6 @@ impl MqttService for GrpcMqttService {
         .await
         .map_err(Self::to_status)
         .map(Response::new)
-    }
-
-    async fn set_topic_retain_message(
-        &self,
-        request: Request<SetTopicRetainMessageRequest>,
-    ) -> Result<Response<SetTopicRetainMessageReply>, Status> {
-        let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        set_topic_retain_message_by_req(&self.raft_manager, &self.rocksdb_engine_handler, &req)
-            .await
-            .map_err(Self::to_status)
-            .map(Response::new)
-    }
-
-    async fn get_topic_retain_message(
-        &self,
-        request: Request<GetTopicRetainMessageRequest>,
-    ) -> Result<Response<GetTopicRetainMessageReply>, Status> {
-        let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        get_topic_retain_message_by_req(&self.rocksdb_engine_handler, &req)
-            .await
-            .map_err(Self::to_status)
-            .map(Response::new)
-    }
-
-    // Share Subscription
-    async fn get_share_sub_leader(
-        &self,
-        request: Request<GetShareSubLeaderRequest>,
-    ) -> Result<Response<GetShareSubLeaderReply>, Status> {
-        let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        get_share_sub_leader_by_req(
-            &self.cache_manager,
-            &self.raft_manager,
-            &self.rocksdb_engine_handler,
-            &req,
-        )
-        .await
-        .map_err(Self::to_status)
-        .map(Response::new)
-    }
-
-    // Last Will
-    async fn save_last_will_message(
-        &self,
-        request: Request<SaveLastWillMessageRequest>,
-    ) -> Result<Response<SaveLastWillMessageReply>, Status> {
-        let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        save_last_will_message_by_req(&self.raft_manager, &req)
-            .await
-            .map_err(Self::to_status)
-            .map(Response::new)
-    }
-
-    async fn get_last_will_message(
-        &self,
-        request: Request<GetLastWillMessageRequest>,
-    ) -> Result<Response<GetLastWillMessageReply>, Status> {
-        let req = request.into_inner();
-        self.validate_request(&req)?;
-
-        get_last_will_message_by_req(&self.rocksdb_engine_handler, &req)
-            .await
-            .map_err(Self::to_status)
-            .map(Response::new)
     }
 
     // ACL

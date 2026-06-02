@@ -12,31 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use metadata_struct::mq9::Priority;
-
 /// Subject namespace prefix: `$mq9.AI`
 const PREFIX: &str = "$mq9.AI";
 
 /// All recognized mq9 subjects.
 ///
-/// Full subject strings:
-/// - `$mq9.AI.MAILBOX.CREATE`
-/// - `$mq9.AI.MAILBOX.MSG.{mail_id}.{critical|urgent|normal|low}` — publish
-/// - `$mq9.AI.MAILBOX.MSG.{mail_id}`                               — subscribe (no priority)
-/// - `$mq9.AI.MAILBOX.LIST.{mail_id}`
-/// - `$mq9.AI.MAILBOX.DELETE.{mail_id}.{msg_id}`
+/// Protocol layout:
+///
+/// Mailbox management:
+///   $mq9.AI.MAILBOX.CREATE
+///
+/// Message communication:
+///   $mq9.AI.MSG.SEND.{mail_address}
+///   $mq9.AI.MSG.FETCH.{mail_address}
+///   $mq9.AI.MSG.ACK.{mail_address}
+///   $mq9.AI.MSG.QUERY.{mail_address}
+///   $mq9.AI.MSG.DELETE.{mail_address}.{msg_id}
+///
+/// Agent management:
+///   $mq9.AI.AGENT.REGISTER
+///   $mq9.AI.AGENT.UNREGISTER
+///   $mq9.AI.AGENT.REPORT
+///   $mq9.AI.AGENT.DISCOVER
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mq9Command {
+    // ── Mailbox management ────────────────────────────────────────────────────
     /// `$mq9.AI.MAILBOX.CREATE`
     MailboxCreate,
-    /// `$mq9.AI.MAILBOX.MSG.{mail_id}.{priority}` — publish a message.
-    MailboxMsg { mail_id: String, priority: Priority },
-    /// `$mq9.AI.MAILBOX.MSG.{mail_id}` — subscribe to a mailbox (server pushes by priority).
-    MailboxSub { mail_id: String },
-    /// `$mq9.AI.MAILBOX.LIST.{mail_id}`
-    MailboxList { mail_id: String },
-    /// `$mq9.AI.MAILBOX.DELETE.{mail_id}.{msg_id}`
-    MailboxDelete { mail_id: String, msg_id: String },
+
+    // ── Message communication ─────────────────────────────────────────────────
+    /// `$mq9.AI.MSG.SEND.{mail_address}` — priority via `mq9-priority` header
+    MsgSend { mail_address: String },
+    /// `$mq9.AI.MSG.FETCH.{mail_address}`
+    MsgFetch { mail_address: String },
+    /// `$mq9.AI.MSG.ACK.{mail_address}`
+    MsgAck { mail_address: String },
+    /// `$mq9.AI.MSG.QUERY.{mail_address}`
+    MsgQuery { mail_address: String },
+    /// `$mq9.AI.MSG.DELETE.{mail_address}.{msg_id}`
+    MsgDelete {
+        mail_address: String,
+        msg_id: String,
+    },
+
+    // ── Agent management ──────────────────────────────────────────────────────
+    /// `$mq9.AI.AGENT.REGISTER`
+    AgentRegister,
+    /// `$mq9.AI.AGENT.UNREGISTER`
+    AgentUnregister,
+    /// `$mq9.AI.AGENT.REPORT`
+    AgentReport,
+    /// `$mq9.AI.AGENT.DISCOVER`
+    AgentDiscover,
 }
 
 impl Mq9Command {
@@ -47,78 +74,89 @@ impl Mq9Command {
     pub fn to_subject(&self) -> String {
         match self {
             Mq9Command::MailboxCreate => format!("{}.MAILBOX.CREATE", PREFIX),
-            Mq9Command::MailboxMsg { mail_id, priority } => {
-                format!("{}.MAILBOX.MSG.{}.{}", PREFIX, mail_id, priority)
+
+            Mq9Command::MsgSend { mail_address } => {
+                format!("{}.MSG.SEND.{}", PREFIX, mail_address)
             }
-            Mq9Command::MailboxSub { mail_id } => {
-                format!("{}.MAILBOX.MSG.{}", PREFIX, mail_id)
+            Mq9Command::MsgFetch { mail_address } => {
+                format!("{}.MSG.FETCH.{}", PREFIX, mail_address)
             }
-            Mq9Command::MailboxList { mail_id } => {
-                format!("{}.MAILBOX.LIST.{}", PREFIX, mail_id)
+            Mq9Command::MsgAck { mail_address } => {
+                format!("{}.MSG.ACK.{}", PREFIX, mail_address)
             }
-            Mq9Command::MailboxDelete { mail_id, msg_id } => {
-                format!("{}.MAILBOX.DELETE.{}.{}", PREFIX, mail_id, msg_id)
+            Mq9Command::MsgQuery { mail_address } => {
+                format!("{}.MSG.QUERY.{}", PREFIX, mail_address)
             }
+            Mq9Command::MsgDelete {
+                mail_address,
+                msg_id,
+            } => format!("{}.MSG.DELETE.{}.{}", PREFIX, mail_address, msg_id),
+
+            Mq9Command::AgentRegister => format!("{}.AGENT.REGISTER", PREFIX),
+            Mq9Command::AgentUnregister => format!("{}.AGENT.UNREGISTER", PREFIX),
+            Mq9Command::AgentReport => format!("{}.AGENT.REPORT", PREFIX),
+            Mq9Command::AgentDiscover => format!("{}.AGENT.DISCOVER", PREFIX),
         }
     }
 
     /// Parse a NATS subject into an [`Mq9Command`].
-    ///
-    /// For `MSG` subjects, if the priority token is `*` the result is
-    /// [`Mq9Command::MailboxSub`] with `priority = None`. A concrete priority
-    /// token on a `MSG` subject always yields [`Mq9Command::MailboxMsg`].
     pub fn parse(subject: &str) -> Option<Self> {
         let rest = subject.strip_prefix(PREFIX)?.strip_prefix('.')?;
-        // First split off the op prefix (MAILBOX.CREATE, MAILBOX.MSG, etc.)
-        let (op, tail) = rest.split_once('.')?;
-        if op != "MAILBOX" {
-            return None;
-        }
-        let (cmd, tail) = tail.split_once('.').unwrap_or((tail, ""));
-        match cmd {
-            "CREATE" if tail.is_empty() => Some(Mq9Command::MailboxCreate),
-            "MSG" if !tail.is_empty() => parse_msg(tail),
-            "LIST" if !tail.is_empty() => Some(Mq9Command::MailboxList {
-                mail_id: tail.to_string(),
-            }),
-            "DELETE" if !tail.is_empty() => {
-                // msg_id is always the last dot-separated token; mail_id is everything before.
-                let (mail_id, msg_id) = tail.rsplit_once('.')?;
-                Some(Mq9Command::MailboxDelete {
-                    mail_id: mail_id.to_string(),
-                    msg_id: msg_id.to_string(),
-                })
-            }
+        let (namespace, tail) = rest.split_once('.')?;
+
+        match namespace {
+            "MAILBOX" => parse_mailbox(tail),
+            "MSG" => parse_msg(tail),
+            "AGENT" => parse_agent(tail),
             _ => None,
         }
     }
 }
 
-/// Parse the tail after `$mq9.AI.MAILBOX.MSG.` into a [`Mq9Command`].
-///
-/// - Last segment is a known priority token → [`Mq9Command::MailboxMsg`] with that priority.
-/// - No priority suffix (no dot, or last segment not a priority token) → [`Mq9Command::MailboxMsg`] with `Normal`.
-/// - Subscribe uses a separate `SUB` packet and is matched via [`Mq9Command::MailboxSub`] directly.
+fn parse_mailbox(tail: &str) -> Option<Mq9Command> {
+    match tail {
+        "CREATE" => Some(Mq9Command::MailboxCreate),
+        _ => None,
+    }
+}
+
 fn parse_msg(tail: &str) -> Option<Mq9Command> {
-    if tail.is_empty() {
+    let (cmd, rest) = tail.split_once('.')?;
+    if rest.is_empty() {
         return None;
     }
-
-    if let Some((prefix, last)) = tail.rsplit_once('.') {
-        if let Some(p) = Priority::parse(last) {
-            return Some(Mq9Command::MailboxMsg {
-                mail_id: prefix.to_string(),
-                priority: p,
-            });
+    match cmd {
+        "SEND" => Some(Mq9Command::MsgSend {
+            mail_address: rest.to_string(),
+        }),
+        "FETCH" => Some(Mq9Command::MsgFetch {
+            mail_address: rest.to_string(),
+        }),
+        "ACK" => Some(Mq9Command::MsgAck {
+            mail_address: rest.to_string(),
+        }),
+        "QUERY" => Some(Mq9Command::MsgQuery {
+            mail_address: rest.to_string(),
+        }),
+        "DELETE" => {
+            let (mail_address, msg_id) = rest.rsplit_once('.')?;
+            Some(Mq9Command::MsgDelete {
+                mail_address: mail_address.to_string(),
+                msg_id: msg_id.to_string(),
+            })
         }
-        // last segment is not a priority token → entire tail is the mail_id
+        _ => None,
     }
+}
 
-    // No dot, or last segment not a priority → entire tail is mail_id, default Normal
-    Some(Mq9Command::MailboxMsg {
-        mail_id: tail.to_string(),
-        priority: Priority::Normal,
-    })
+fn parse_agent(tail: &str) -> Option<Mq9Command> {
+    match tail {
+        "REGISTER" => Some(Mq9Command::AgentRegister),
+        "UNREGISTER" => Some(Mq9Command::AgentUnregister),
+        "REPORT" => Some(Mq9Command::AgentReport),
+        "DISCOVER" => Some(Mq9Command::AgentDiscover),
+        _ => None,
+    }
 }
 
 impl std::fmt::Display for Mq9Command {
@@ -132,7 +170,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_create() {
+    fn test_mailbox_create() {
         assert_eq!(
             Mq9Command::parse("$mq9.AI.MAILBOX.CREATE"),
             Some(Mq9Command::MailboxCreate)
@@ -140,73 +178,124 @@ mod tests {
     }
 
     #[test]
-    fn test_parse() {
-        // CREATE
+    fn test_msg_send() {
         assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.CREATE"),
-            Some(Mq9Command::MailboxCreate)
+            Mq9Command::parse("$mq9.AI.MSG.SEND.task.001.callback"),
+            Some(Mq9Command::MsgSend {
+                mail_address: "task.001.callback".to_string(),
+            })
         );
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.MSG.SEND.agent.inbox"),
+            Some(Mq9Command::MsgSend {
+                mail_address: "agent.inbox".to_string(),
+            })
+        );
+    }
 
-        // MSG — no priority suffix → default Normal
+    #[test]
+    fn test_msg_fetch() {
         assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.MSG.m-001"),
-            Some(Mq9Command::MailboxMsg {
-                mail_id: "m-001".to_string(),
-                priority: Priority::Normal
+            Mq9Command::parse("$mq9.AI.MSG.FETCH.task.001.callback"),
+            Some(Mq9Command::MsgFetch {
+                mail_address: "task.001.callback".to_string(),
             })
         );
-        // MSG — explicit priorities
-        assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.MSG.m-001.urgent"),
-            Some(Mq9Command::MailboxMsg {
-                mail_id: "m-001".to_string(),
-                priority: Priority::Urgent
-            })
-        );
-        assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.MSG.m-001.critical"),
-            Some(Mq9Command::MailboxMsg {
-                mail_id: "m-001".to_string(),
-                priority: Priority::Critical
-            })
-        );
-        // MSG — mail_id with dots, last segment not a priority → entire tail is mail_id
-        assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.MSG.task.queue"),
-            Some(Mq9Command::MailboxMsg {
-                mail_id: "task.queue".to_string(),
-                priority: Priority::Normal
-            })
-        );
+    }
 
-        // LIST
+    #[test]
+    fn test_msg_ack() {
         assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.LIST.m-001"),
-            Some(Mq9Command::MailboxList {
-                mail_id: "m-001".to_string()
+            Mq9Command::parse("$mq9.AI.MSG.ACK.task.001.callback"),
+            Some(Mq9Command::MsgAck {
+                mail_address: "task.001.callback".to_string(),
             })
         );
+    }
 
-        // DELETE
+    #[test]
+    fn test_msg_query() {
         assert_eq!(
-            Mq9Command::parse("$mq9.AI.MAILBOX.DELETE.m-001.msg-42"),
-            Some(Mq9Command::MailboxDelete {
-                mail_id: "m-001".to_string(),
-                msg_id: "msg-42".to_string()
+            Mq9Command::parse("$mq9.AI.MSG.QUERY.task.001.callback"),
+            Some(Mq9Command::MsgQuery {
+                mail_address: "task.001.callback".to_string(),
             })
         );
+    }
 
-        // invalid
+    #[test]
+    fn test_msg_delete() {
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.MSG.DELETE.task.001.callback.7"),
+            Some(Mq9Command::MsgDelete {
+                mail_address: "task.001.callback".to_string(),
+                msg_id: "7".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_agent_commands() {
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.AGENT.REGISTER"),
+            Some(Mq9Command::AgentRegister)
+        );
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.AGENT.UNREGISTER"),
+            Some(Mq9Command::AgentUnregister)
+        );
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.AGENT.REPORT"),
+            Some(Mq9Command::AgentReport)
+        );
+        assert_eq!(
+            Mq9Command::parse("$mq9.AI.AGENT.DISCOVER"),
+            Some(Mq9Command::AgentDiscover)
+        );
+    }
+
+    #[test]
+    fn test_invalid() {
         assert_eq!(Mq9Command::parse("MAILBOX.CREATE"), None);
-        assert_eq!(Mq9Command::parse("$mq9.AI.MAILBOX.CREATE.extra"), None);
-        assert_eq!(Mq9Command::parse("$mq9.AI.MAILBOX.UNKNOWN.m-001"), None);
-        assert_eq!(Mq9Command::parse("$mq9.AI.MAILBOX.MSG"), None);
+        assert_eq!(Mq9Command::parse("$mq9.AI.UNKNOWN.FOO"), None);
+        assert_eq!(Mq9Command::parse("$mq9.AI.MSG.SEND"), None);
+        assert_eq!(Mq9Command::parse("$mq9.AI.MSG.UNKNOWN.addr"), None);
+        assert_eq!(Mq9Command::parse("$mq9.AI.AGENT.UNKNOWN"), None);
+    }
 
-        // is_mq9_subject
+    #[test]
+    fn test_is_mq9_subject() {
         assert!(Mq9Command::is_mq9_subject("$mq9.AI.MAILBOX.CREATE"));
-        assert!(Mq9Command::is_mq9_subject(
-            "$mq9.AI.MAILBOX.MSG.m-001.normal"
-        ));
+        assert!(Mq9Command::is_mq9_subject("$mq9.AI.MSG.SEND.foo"));
+        assert!(Mq9Command::is_mq9_subject("$mq9.AI.AGENT.REGISTER"));
         assert!(!Mq9Command::is_mq9_subject("some.other.subject"));
+    }
+
+    #[test]
+    fn test_to_subject_roundtrip() {
+        let cases = vec![
+            Mq9Command::MailboxCreate,
+            Mq9Command::MsgSend {
+                mail_address: "agent.inbox".to_string(),
+            },
+            Mq9Command::MsgFetch {
+                mail_address: "task.001".to_string(),
+            },
+            Mq9Command::MsgQuery {
+                mail_address: "task.001".to_string(),
+            },
+            Mq9Command::AgentRegister,
+            Mq9Command::AgentDiscover,
+        ];
+        for cmd in cases {
+            let subject = cmd.to_subject();
+            let parsed = Mq9Command::parse(&subject);
+            assert_eq!(
+                parsed,
+                Some(cmd.clone()),
+                "roundtrip failed for {}",
+                subject
+            );
+        }
     }
 }

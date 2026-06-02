@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use broker_core::cache::NodeCacheManager;
+use broker_core::cluster::ClusterStorage;
 use broker_core::dynamic_config::build_cluster_config;
+use broker_core::share_group::ShareGroupStorage;
 use broker_core::tenant::TenantStorage;
 use broker_core::topic::TopicStorage;
 use common_base::error::common::CommonError;
@@ -32,7 +34,8 @@ use mqtt_broker::storage::schema::SchemaStorage;
 use mqtt_broker::storage::topic_rewrite::TopicRewriteStorage;
 use nats_broker::core::cache::NatsCacheManager;
 use nats_broker::push::NatsSubscribeManager;
-use nats_broker::storage::email::Mq9EmailStorage;
+use nats_broker::storage::agent::Mq9AgentStorage;
+use nats_broker::storage::mail::Mq9MailStorage;
 use nats_broker::storage::subscribe::NatsSubscribeStorage;
 use schema_register::schema::SchemaRegisterManager;
 use std::sync::Arc;
@@ -71,6 +74,15 @@ async fn load_common_cache(
     connector_manager: &Arc<ConnectorManager>,
     schema_manager: &Arc<SchemaRegisterManager>,
 ) -> ResultMqttBrokerError {
+    let cluster_storage = ClusterStorage::new(client_pool.clone());
+    let nodes = cluster_storage
+        .node_list()
+        .await
+        .map_err(|e| MqttBrokerError::CommonError(format!("Failed to load node list: {}", e)))?;
+    for node in nodes.iter() {
+        broker_cache.add_node(node.clone());
+    }
+
     let cluster = build_cluster_config(client_pool).await.map_err(|e| {
         MqttBrokerError::CommonError(format!("Failed to load cluster config: {}", e))
     })?;
@@ -121,13 +133,34 @@ async fn load_common_cache(
         broker_cache.add_tenant(tenant.clone());
     }
 
+    let share_group_storage = ShareGroupStorage::new(client_pool.clone());
+    let share_groups = share_group_storage
+        .list_all()
+        .await
+        .map_err(|e| MqttBrokerError::CommonError(format!("Failed to load share groups: {}", e)))?;
+    let share_group_count = share_groups.len();
+    for group in share_groups {
+        broker_cache.add_share_group(group);
+    }
+
+    let share_group_members = share_group_storage.list_all_members().await.map_err(|e| {
+        MqttBrokerError::CommonError(format!("Failed to load share group members: {}", e))
+    })?;
+    let share_group_member_count = share_group_members.len();
+    for member in share_group_members {
+        broker_cache.add_share_group_member(&member);
+    }
+
     info!(
-        "Common cache loaded: topics={}, connectors={}, schemas={}, schema_binds={}, tenants={}",
+        "Common cache loaded: nodes={}, topics={}, connectors={}, schemas={}, schema_binds={}, tenants={}, share_groups={}, share_group_members={}",
+        nodes.len(),
         topic_list.len(),
         connectors.len(),
         schemas.len(),
         schema_binds.len(),
         tenants.len(),
+        share_group_count,
+        share_group_member_count,
     );
 
     Ok(())
@@ -232,22 +265,29 @@ pub async fn load_nats_cache(
     client_pool: &Arc<ClientPool>,
 ) -> Result<(), CommonError> {
     let subscribe_storage = NatsSubscribeStorage::new(client_pool.clone());
-    let subscribes = subscribe_storage.list("", 0).await?;
+    let subscribes = subscribe_storage.list(0).await?;
     let subscribe_count = subscribes.len();
     for subscribe in subscribes {
         subscribe_manager.add_subscribe(subscribe);
     }
 
-    let email_storage = Mq9EmailStorage::new(client_pool.clone());
-    let emails = email_storage.list("").await?;
-    let email_count = emails.len();
-    for email in emails {
-        cache_manager.add_mail(email);
+    let mail_storage = Mq9MailStorage::new(client_pool.clone());
+    let mails = mail_storage.list("").await?;
+    let mail_count = mails.len();
+    for mail in mails {
+        cache_manager.add_mail(mail);
+    }
+
+    let agent_storage = Mq9AgentStorage::new(client_pool.clone());
+    let agents = agent_storage.list("").await?;
+    let agent_count = agents.len();
+    for agent in agents {
+        cache_manager.add_agent(agent);
     }
 
     info!(
-        "NATS cache loaded: subscribes={}, emails={}",
-        subscribe_count, email_count
+        "NATS cache loaded: subscribes={}, mails={}, agents={}",
+        subscribe_count, mail_count, agent_count
     );
     Ok(())
 }

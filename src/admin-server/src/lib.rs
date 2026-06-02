@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #![allow(clippy::result_large_err)]
+pub mod auth;
 pub mod client;
 pub mod cluster;
+pub mod debug;
 pub mod engine;
 pub mod mcp;
+pub mod mq9;
 pub mod mqtt;
-pub mod nats;
 pub mod path;
 pub mod server;
 pub mod state;

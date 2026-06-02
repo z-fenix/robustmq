@@ -12,16 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::cluster::un_register_node_by_req;
-use crate::core::cache::MetaCacheManager;
+use crate::core::{cache::MetaCacheManager, cluster::remove_node};
 use crate::raft::manager::MultiRaftManager;
 use common_base::tools::now_second;
-use grpc_clients::pool::ClientPool;
 use node_call::NodeCallManager;
-use protocol::meta::meta_service_common::UnRegisterNodeRequest;
+use rocksdb_engine::rocksdb::RocksDBEngine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct NodeHeartbeatData {
@@ -33,8 +31,8 @@ pub struct BrokerHeartbeat {
     timeout_ms: u64,
     cluster_cache: Arc<MetaCacheManager>,
     raft_manager: Arc<MultiRaftManager>,
-    client_pool: Arc<ClientPool>,
     node_call_manager: Arc<NodeCallManager>,
+    rocksdb_engine_handler: Arc<RocksDBEngine>,
 }
 
 impl BrokerHeartbeat {
@@ -42,27 +40,23 @@ impl BrokerHeartbeat {
         timeout_ms: u64,
         cluster_cache: Arc<MetaCacheManager>,
         raft_manager: Arc<MultiRaftManager>,
-        client_pool: Arc<ClientPool>,
         node_call_manager: Arc<NodeCallManager>,
+        rocksdb_engine_handler: Arc<RocksDBEngine>,
     ) -> Self {
         BrokerHeartbeat {
             timeout_ms,
             cluster_cache,
             raft_manager,
-            client_pool,
             node_call_manager,
+            rocksdb_engine_handler,
         }
     }
 
     pub async fn start(&self) {
-        // Collect decisions first to release the DashMap iter lock before any .await.
-        // Holding iter() across an .await that triggers remove() on the same map causes
-        // a deadlock: the read shard lock is never released, so write lock can't proceed.
         let actions = self.collect_expired_nodes();
         self.process_expired_nodes(actions).await;
     }
 
-    // Step 1: snapshot node states while holding iter() lock, then release immediately.
     fn collect_expired_nodes(&self) -> Vec<NodeAction> {
         let now_time = now_second();
         self.cluster_cache
@@ -92,7 +86,6 @@ impl BrokerHeartbeat {
             .collect()
     }
 
-    // Step 2: iter() lock already released; safe to .await and mutate node_list.
     async fn process_expired_nodes(&self, actions: Vec<NodeAction>) {
         for action in actions {
             if action.report_time == 0 {
@@ -101,23 +94,27 @@ impl BrokerHeartbeat {
             }
 
             if action.expired {
-                let req = UnRegisterNodeRequest {
-                    node_id: action.node_id,
-                };
-
-                if let Err(e) = un_register_node_by_req(
+                if let Err(e) = remove_node(
                     &self.cluster_cache,
                     &self.raft_manager,
-                    &self.client_pool,
+                    &self.rocksdb_engine_handler,
                     &self.node_call_manager,
-                    req,
+                    action.node_id,
                 )
                 .await
                 {
-                    error!(
-                        "Heartbeat timeout, failed to delete node {} , error message :{},now time:{},report time:{}",
-                        action.node_id, e, action.now_time, action.report_time
-                    );
+                    let e_str = e.to_string();
+                    if e_str.contains("has to forward request to") {
+                        debug!(
+                            "Heartbeat timeout, failed to delete node {} , error message :{},now time:{},report time:{}",
+                            action.node_id, e_str, action.now_time, action.report_time
+                        );
+                    } else {
+                        error!(
+                            "Heartbeat timeout, failed to delete node {} , error message :{},now time:{},report time:{}",
+                            action.node_id, e_str, action.now_time, action.report_time
+                        );
+                    }
                     continue;
                 }
 

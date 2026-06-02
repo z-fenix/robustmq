@@ -17,8 +17,8 @@ use admin_server::{
     state::{HttpState, MQTTContext, NatsContext, StorageEngineContext},
 };
 use common_base::role::is_engine_node;
-use common_metrics::core::server::register_prometheus_export;
-use pprof_monitor::pprof_monitor::start_pprof_monitor;
+#[cfg(not(windows))]
+use pprof::ProfilerGuard;
 use std::sync::Arc;
 use tracing::error;
 
@@ -41,7 +41,7 @@ impl BrokerServer {
             )
             .await
             {
-                error!("Failed to start GRPC server: {}", e);
+                error!("Failed to start GRPC server on port {}: {}", grpc_port, e);
                 std::process::exit(1);
             }
         }));
@@ -49,55 +49,71 @@ impl BrokerServer {
 
     pub fn start_admin_server(&self) {
         let broker_cache = self.broker_cache.clone();
-        let state = Arc::new(HttpState {
-            client_pool: self.client_pool.clone(),
-            connection_manager: self.mqtt_params.connection_manager.clone(),
-            mqtt_context: MQTTContext {
-                cache_manager: self.mqtt_params.cache_manager.clone(),
-                security_manager: self.mqtt_params.security_manager.clone(),
-                subscribe_manager: self.mqtt_params.subscribe_manager.clone(),
-                metrics_manager: self.mqtt_params.metrics_cache_manager.clone(),
-                connector_manager: self.mqtt_params.connector_manager.clone(),
-                schema_manager: self.mqtt_params.schema_manager.clone(),
-                retain_message_manager: self.mqtt_params.retain_message_manager.clone(),
-                push_manager: self.mqtt_params.push_manager.clone(),
-                storage_driver_manager: self.mqtt_params.storage_driver_manager.clone(),
-            },
-            engine_context: StorageEngineContext {
-                engine_adapter_handler: self.engine_params.storage_engine_handler.clone(),
-                cache_manager: self.engine_params.cache_manager.clone(),
-            },
-            rocksdb_engine_handler: self.rocksdb_engine_handler.clone(),
-            broker_cache,
+        let nats_cache_manager = self.nats_params.cache_manager.clone();
+        let nats_subscribe_manager = self.nats_params.subscribe_manager.clone();
+        let nats_tcp_port = self.config.nats_runtime.tcp_port;
+
+        #[cfg(not(windows))]
+        let pprof_guard = if self.config.runtime.pprof_enable {
+            match ProfilerGuard::new(100) {
+                Ok(guard) => Some(Arc::new(guard)),
+                Err(e) => {
+                    error!("Failed to start pprof profiler: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
+
+        let client_pool = self.client_pool.clone();
+        let connection_manager = self.mqtt_params.connection_manager.clone();
+        let mqtt_context = MQTTContext {
+            cache_manager: self.mqtt_params.cache_manager.clone(),
+            security_manager: self.mqtt_params.security_manager.clone(),
+            subscribe_manager: self.mqtt_params.subscribe_manager.clone(),
+            metrics_manager: self.mqtt_params.metrics_cache_manager.clone(),
+            connector_manager: self.mqtt_params.connector_manager.clone(),
+            schema_manager: self.mqtt_params.schema_manager.clone(),
+            push_manager: self.mqtt_params.push_manager.clone(),
             storage_driver_manager: self.mqtt_params.storage_driver_manager.clone(),
-            rate_limiter: self.global_rate_limiter.clone(),
+        };
+        let engine_context = StorageEngineContext {
+            engine_adapter_handler: self.engine_params.storage_engine_handler.clone(),
+            cache_manager: self.engine_params.cache_manager.clone(),
+        };
+        let rocksdb_engine_handler = self.rocksdb_engine_handler.clone();
+        let storage_driver_manager = self.mqtt_params.storage_driver_manager.clone();
+        let rate_limiter = self.global_rate_limiter.clone();
+
+        let state = Arc::new(HttpState {
+            client_pool,
+            connection_manager,
+            mqtt_context,
+            engine_context,
+            rocksdb_engine_handler,
+            broker_cache,
+            storage_driver_manager,
+            rate_limiter,
             nats_context: Some(NatsContext {
-                cache_manager: self.nats_params.cache_manager.clone(),
+                cache_manager: nats_cache_manager,
+                subscribe_manager: nats_subscribe_manager,
+                nats_tcp_port,
             }),
+            #[cfg(not(windows))]
+            pprof_guard,
         });
+
         let http_port = self.config.http_port;
         self.server_runtime.spawn(async move {
-            AdminServer::new().start(http_port, state).await;
+            if let Err(e) = AdminServer::new().start(http_port, state).await {
+                error!(
+                    "Admin HTTP server failed to start on port {}: {}",
+                    http_port, e
+                );
+                std::process::exit(1);
+            }
         });
-    }
-
-    pub fn start_pprof_server(&self) {
-        let pprof_port = self.config.pprof.port;
-        let pprof_frequency = self.config.pprof.frequency;
-        if self.config.pprof.enable {
-            self.server_runtime.spawn(async move {
-                start_pprof_monitor(pprof_port, pprof_frequency).await;
-            });
-        }
-    }
-
-    pub fn start_prometheus_server(&self) {
-        let prometheus_port = self.config.prometheus.port;
-        if self.config.prometheus.enable {
-            self.server_runtime.spawn(async move {
-                register_prometheus_export(prometheus_port).await;
-            });
-        }
     }
 
     pub fn start_load_cache(&self) {

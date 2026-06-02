@@ -14,15 +14,15 @@
 
 use crate::{
     core::{cache::NatsCacheManager, keep_alive::NatsClientKeepAlive},
-    push::{manager::NatsSubscribeManager, start_push},
+    push::{manager::NatsSubscribeManager, start_sub_task, SubTaskParams},
     server::{NatsServer, NatsServerParams},
 };
 use broker_core::cache::NodeCacheManager;
 use common_base::task::{TaskKind, TaskSupervisor};
 use common_config::broker::broker_config;
 use common_security::manager::SecurityManager;
+use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
-use mq9_core::public::try_init_system_email;
 use network_server::common::channel::RequestChannel;
 use network_server::common::connection_manager::ConnectionManager;
 use rate_limit::global::GlobalRateLimiterManager;
@@ -44,6 +44,7 @@ pub struct NatsBrokerServerParams {
     pub request_channel: Arc<RequestChannel>,
     pub storage_driver_manager: Arc<StorageDriverManager>,
     pub security_manager: Arc<SecurityManager>,
+    pub delay_message_manager: Arc<DelayMessageManager>,
 }
 
 pub struct NatsBrokerServer {
@@ -95,28 +96,21 @@ impl NatsBrokerServer {
         }
     }
 
-    pub async fn start(&self) {
+    pub async fn start(&self) -> Result<(), std::io::Error> {
         let conf = broker_config();
 
-        if let Err(e) = try_init_system_email(
-            &self.cache_manager.node_cache,
-            &self.storage_driver_manager,
-            &self.client_pool,
-        )
-        .await
-        {
-            error!("Failed to init system mailbox: {}", e);
-            std::process::exit(1);
-        }
-
-        start_push(
+        start_sub_task(
             &self.subscribe_manager,
-            self.cache_manager.clone(),
-            self.connection_manager.clone(),
-            self.storage_driver_manager.clone(),
-            self.task_supervisor.clone(),
-            conf.nats_runtime.push_thread_num,
-            self.stop_sx.clone(),
+            SubTaskParams {
+                cache_manager: self.cache_manager.clone(),
+                connection_manager: self.connection_manager.clone(),
+                storage_driver_manager: self.storage_driver_manager.clone(),
+                node_cache: self.cache_manager.node_cache.clone(),
+                client_pool: self.client_pool.clone(),
+                task_supervisor: self.task_supervisor.clone(),
+                push_thread_num: conf.nats_runtime.push_thread_num,
+                stop_sx: self.stop_sx.clone(),
+            },
         )
         .await;
 
@@ -127,11 +121,11 @@ impl NatsBrokerServer {
                 keep_alive.start_heartbeat_check(&stop_sx).await;
             });
 
-        if let Err(e) = self.server.start().await {
-            error!("NATS broker server failed to start: {}", e);
-            std::process::exit(1);
-        }
+        self.server.start().await.map_err(|e| {
+            std::io::Error::other(format!("NATS broker server failed to start: {}", e))
+        })?;
         self.awaiting_stop().await;
+        Ok(())
     }
 
     pub async fn stop(&self) {

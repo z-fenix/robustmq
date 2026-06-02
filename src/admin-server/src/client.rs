@@ -580,7 +580,7 @@ impl AdminHttpClient {
 
     /// Get cluster status / info
     pub async fn get_status(&self) -> Result<String, HttpClientError> {
-        self.get_raw(&api_path("")).await
+        self.get_raw(&api_path(CLUSTER_INFO)).await
     }
 
     /// Set cluster configuration
@@ -862,6 +862,42 @@ impl AdminHttpClient {
         self.get_with_params(&api_path(MQ9_MAIL_LIST_PATH), request)
             .await
     }
+
+    /// Get agent list
+    pub async fn get_agent_list<T, R>(
+        &self,
+        request: &T,
+    ) -> Result<PageReplyData<R>, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.get_with_params(&api_path(MQ9_AGENT_LIST_PATH), request)
+            .await
+    }
+
+    /// Get share group list
+    pub async fn get_share_group_list<T, R>(
+        &self,
+        request: &T,
+    ) -> Result<PageReplyData<R>, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.get_with_params(&api_path(CLUSTER_SHARE_GROUP_LIST_PATH), request)
+            .await
+    }
+
+    /// Get share group detail (group info + member list)
+    pub async fn get_share_group_detail<T, R>(&self, request: &T) -> Result<R, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.get_with_params(&api_path(CLUSTER_SHARE_GROUP_DETAIL_PATH), request)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -870,12 +906,12 @@ mod tests {
 
     #[test]
     fn test_build_url() {
-        let client = AdminHttpClient::new("http://localhost:8080");
+        let client = AdminHttpClient::new("http://localhost:58080");
 
         // Test with leading slash
         assert_eq!(
             client.build_url(&api_path(MQTT_OVERVIEW_PATH)).unwrap(),
-            "http://localhost:8080/api/mqtt/overview"
+            "http://localhost:58080/api/mqtt/overview"
         );
 
         // Test without leading slash
@@ -883,14 +919,14 @@ mod tests {
             client
                 .build_url(&api_path(MQTT_OVERVIEW_PATH)[1..])
                 .unwrap(),
-            "http://localhost:8080/api/mqtt/overview"
+            "http://localhost:58080/api/mqtt/overview"
         );
 
         // Test with trailing slash in base URL
-        let client2 = AdminHttpClient::new("http://localhost:8080/");
+        let client2 = AdminHttpClient::new("http://localhost:58080/");
         assert_eq!(
             client2.build_url(&api_path(MQTT_OVERVIEW_PATH)).unwrap(),
-            "http://localhost:8080/api/mqtt/overview"
+            "http://localhost:58080/api/mqtt/overview"
         );
     }
 
@@ -903,12 +939,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_creation() {
-        let client = AdminHttpClient::new("http://localhost:8080");
-        assert_eq!(client.base_url, "http://localhost:8080");
+        let client = AdminHttpClient::new("http://localhost:58080");
+        assert_eq!(client.base_url, "http://localhost:58080");
 
         let client_with_timeout =
-            AdminHttpClient::with_timeout("http://localhost:8080", Duration::from_secs(10));
-        assert_eq!(client_with_timeout.base_url, "http://localhost:8080");
+            AdminHttpClient::with_timeout("http://localhost:58080", Duration::from_secs(10));
+        assert_eq!(client_with_timeout.base_url, "http://localhost:58080");
     }
 
     #[tokio::test]

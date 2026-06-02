@@ -751,7 +751,7 @@
 ### 6. 用户管理
 
 #### 6.1 用户列表查询
-- **接口**: `GET /api/mqtt/user/list`
+- **接口**: `GET /api/cluster/user/list`
 - **描述**: 查询 MQTT 用户列表，支持按租户过滤、用户名模糊搜索
 - **请求参数**:
 ```json
@@ -794,7 +794,7 @@
 - `create_time`: 用户创建时间戳（秒）
 
 #### 6.2 创建用户
-- **接口**: `POST /api/mqtt/user/create`
+- **接口**: `POST /api/cluster/user/create`
 - **描述**: 创建新的 MQTT 用户
 - **请求参数**:
 ```json
@@ -809,7 +809,7 @@
 - **响应**: 成功返回 "success"
 
 #### 6.3 删除用户
-- **接口**: `POST /api/mqtt/user/delete`
+- **接口**: `POST /api/cluster/user/delete`
 - **描述**: 删除 MQTT 用户
 - **请求参数**:
 ```json
@@ -1122,15 +1122,14 @@
 ### 11. 消息管理
 
 #### 11.1 发送消息
-- **接口**: `POST /api/mqtt/message/send`
+- **接口**: `POST /api/cluster/message/send`
 - **描述**: 通过HTTP API发送MQTT消息到指定主题
 - **请求参数**:
 ```json
 {
   "tenant": "default",            // 必填，租户名称，长度 1-256
   "topic": "sensor/temperature",  // 必填，主题名称，长度 1-256
-  "payload": "25.5",              // 必填，消息内容，不超过 1MB
-  "retain": false                 // 可选，是否保留消息，默认false
+  "payload": "25.5"               // 必填，消息内容，不超过 1MB
 }
 ```
 
@@ -1151,7 +1150,7 @@
 - 消息默认过期时间为3600秒（1小时）
 
 #### 11.2 读取消息
-- **接口**: `POST /api/mqtt/message/read`
+- **接口**: `POST /api/cluster/message/read`
 - **描述**: 从指定主题读取消息
 - **请求参数**:
 ```json
@@ -1442,27 +1441,27 @@
 
 ### 查询集群概览
 ```bash
-curl -X GET http://localhost:8080/api/mqtt/overview
+curl -X GET http://localhost:58080/api/mqtt/overview
 ```
 
 ### 查询指定租户的客户端
 ```bash
-curl "http://localhost:8080/api/mqtt/client/list?tenant=default&limit=10&page=1"
+curl "http://localhost:58080/api/mqtt/client/list?tenant=default&limit=10&page=1"
 ```
 
 ### 查询指定租户的会话
 ```bash
-curl "http://localhost:8080/api/mqtt/session/list?tenant=default&limit=20&page=1"
+curl "http://localhost:58080/api/mqtt/session/list?tenant=default&limit=20&page=1"
 ```
 
 ### 查询订阅列表（指定租户）
 ```bash
-curl "http://localhost:8080/api/mqtt/subscribe/list?tenant=default&limit=20&page=1"
+curl "http://localhost:58080/api/mqtt/subscribe/list?tenant=default&limit=20&page=1"
 ```
 
 ### 创建租户
 ```bash
-curl -X POST http://localhost:8080/api/cluster/tenant/create \
+curl -X POST http://localhost:58080/api/cluster/tenant/create \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_name": "production",
@@ -1472,7 +1471,7 @@ curl -X POST http://localhost:8080/api/cluster/tenant/create \
 
 ### 删除主题
 ```bash
-curl -X POST http://localhost:8080/api/cluster/topic/delete \
+curl -X POST http://localhost:58080/api/cluster/topic/delete \
   -H "Content-Type: application/json" \
   -d '{
     "tenant": "default",
@@ -1482,7 +1481,7 @@ curl -X POST http://localhost:8080/api/cluster/topic/delete \
 
 ### 创建用户
 ```bash
-curl -X POST http://localhost:8080/api/mqtt/user/create \
+curl -X POST http://localhost:58080/api/cluster/user/create \
   -H "Content-Type: application/json" \
   -d '{
     "tenant": "default",
@@ -1494,7 +1493,7 @@ curl -X POST http://localhost:8080/api/mqtt/user/create \
 
 ### 创建ACL规则
 ```bash
-curl -X POST http://localhost:8080/api/cluster/acl/create \
+curl -X POST http://localhost:58080/api/cluster/acl/create \
   -H "Content-Type: application/json" \
   -d '{
     "tenant": "default",
@@ -1510,7 +1509,7 @@ curl -X POST http://localhost:8080/api/cluster/acl/create \
 
 ### 创建黑名单（通配符匹配）
 ```bash
-curl -X POST http://localhost:8080/api/cluster/blacklist/create \
+curl -X POST http://localhost:58080/api/cluster/blacklist/create \
   -H "Content-Type: application/json" \
   -d '{
     "name": "bl-bad-client-match",
@@ -1524,7 +1523,7 @@ curl -X POST http://localhost:8080/api/cluster/blacklist/create \
 
 ### 创建Schema
 ```bash
-curl -X POST http://localhost:8080/api/cluster/schema/create \
+curl -X POST http://localhost:58080/api/cluster/schema/create \
   -H "Content-Type: application/json" \
   -d '{
     "tenant": "default",
@@ -1538,20 +1537,20 @@ curl -X POST http://localhost:8080/api/cluster/schema/create \
 ### 查询监控数据
 ```bash
 # 查询连接数监控数据
-curl "http://localhost:8080/api/mqtt/monitor/data?data_type=connection_num"
+curl "http://localhost:58080/api/mqtt/monitor/data?data_type=connection_num"
 
 # 查询指定主题的消息接收数
-curl "http://localhost:8080/api/mqtt/monitor/data?data_type=topic_in_num&topic_name=sensor/temperature"
+curl "http://localhost:58080/api/mqtt/monitor/data?data_type=topic_in_num&topic_name=sensor/temperature"
 ```
 
 ### 发送消息
 ```bash
-curl -X POST http://localhost:8080/api/mqtt/message/send \
+curl -X POST http://localhost:58080/api/cluster/message/send \
   -H "Content-Type: application/json" \
   -d '{
+    "tenant": "default",
     "topic": "sensor/temperature",
-    "payload": "25.5",
-    "retain": false
+    "payload": "25.5"
   }'
 ```
 

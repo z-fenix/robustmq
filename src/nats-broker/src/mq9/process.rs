@@ -15,13 +15,17 @@
 use crate::core::error::NatsBrokerError;
 use crate::core::write_client::write_nats_packet;
 use crate::handler::command::NatsProcessContext;
+use crate::mq9::agent::{
+    process_agent_discover, process_agent_register, process_agent_report, process_agent_unregister,
+};
 use crate::mq9::create::process_create;
 use crate::mq9::delete::process_delete;
-use crate::mq9::list::process_list;
-use crate::mq9::publish::process_pub;
+use crate::mq9::fetch::{process_ack, process_fetch};
+use crate::mq9::query::process_query;
+use crate::mq9::send::process_send;
 use bytes::Bytes;
 use mq9_core::command::Mq9Command;
-use mq9_core::protocol::Mq9Reply;
+use mq9_core::protocol::err_reply;
 use protocol::nats::packet::NatsPacket;
 
 pub async fn mq9_command(
@@ -41,30 +45,61 @@ pub async fn mq9_command(
         }
     };
 
-    let result = match parsed {
-        Mq9Command::MailboxCreate => process_create(ctx, payload).await,
-        Mq9Command::MailboxMsg { mail_id, priority } => {
-            process_pub(ctx, &mail_id, &priority, headers, payload).await
+    let response_json = match parsed {
+        Mq9Command::MailboxCreate => match process_create(ctx, payload).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::MsgSend { mail_address } => {
+            match process_send(ctx, &mail_address, headers, reply_to, payload).await {
+                Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+                Err(e) => err_reply(e.to_string()),
+            }
         }
-        Mq9Command::MailboxList { mail_id } => process_list(ctx, &mail_id).await,
-        Mq9Command::MailboxDelete { mail_id, msg_id } => {
-            process_delete(ctx, &mail_id, &msg_id).await
+        Mq9Command::MsgFetch { mail_address } => {
+            match process_fetch(ctx, &mail_address, payload).await {
+                Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+                Err(e) => err_reply(e.to_string()),
+            }
         }
-        Mq9Command::MailboxSub { .. } => {
-            // SUB subjects are handled in the subscribe path, not via PUB.
-            return Some(NatsPacket::Err(
-                "use SUB to subscribe to a mailbox".to_string(),
-            ));
+        Mq9Command::MsgAck { mail_address } => match process_ack(ctx, &mail_address, payload).await
+        {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::MsgQuery { mail_address } => {
+            match process_query(ctx, &mail_address, payload).await {
+                Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+                Err(e) => err_reply(e.to_string()),
+            }
         }
+        Mq9Command::MsgDelete {
+            mail_address,
+            msg_id,
+        } => match process_delete(ctx, &mail_address, &msg_id).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::AgentRegister => match process_agent_register(ctx, payload).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::AgentUnregister => match process_agent_unregister(ctx, payload).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::AgentReport => match process_agent_report(ctx, payload).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
+        Mq9Command::AgentDiscover => match process_agent_discover(ctx, payload).await {
+            Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+            Err(e) => err_reply(e.to_string()),
+        },
     };
 
     if let Some(reply_subject) = reply_to {
-        let reply = match result {
-            Ok(r) => r,
-            Err(e) => Mq9Reply::err(e.to_string()),
-        };
-        let response = serde_json::to_string(&reply).unwrap_or_default();
-        let _ = reply_nats_packet(ctx, reply_subject, Bytes::from(response)).await;
+        let _ = reply_nats_packet(ctx, reply_subject, Bytes::from(response_json)).await;
     }
 
     None

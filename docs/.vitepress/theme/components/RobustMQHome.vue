@@ -160,12 +160,12 @@ const scenarios = computed(() => [
   {
     icon: '🤖',
     color: '#d946ef',
-    title: t('AI Agent 通信', 'AI Agent Communication'),
-    subtitle: t('原生 Agent 基础设施', 'Native Agent Infrastructure'),
+    title: t('mq9 — 多 Agent 系统基础设施', 'mq9 — Multi-Agent Infrastructure'),
+    subtitle: t('注册发现 + 可靠异步通信，同一个 broker', 'Registry + reliable async messaging in one broker'),
     points: [
-      t('$mq9.AI.API.* Subject 空间，Agent 注册、发现、调用', '$mq9.AI.API.* subjects for Agent register, discover, and invoke'),
-      t('百万级轻量 Topic，每个 Agent 独立通道', 'Million-scale Topics — each Agent gets its own isolated channel'),
-      t('NATS Queue Group 原生负载均衡，零学习成本', 'NATS Queue Group load balancing, zero learning overhead'),
+      t('Agent 注册与语义发现：AgentCard 模型，按 capability 全文 + 向量检索', 'Agent registry & semantic discovery: AgentCard model, full-text + vector search by capability'),
+      t('每个 Agent 独立持久化 mailbox，FETCH+ACK 消费，离线照样收', 'Per-Agent persistent mailbox, FETCH+ACK pull consumption, offline delivery'),
+      t('原生支持 A2A 协议，15 行代码构建一个合规 A2A Agent', 'Native A2A protocol support — build a compliant A2A Agent in 15 lines of code'),
     ]
   },
   {
@@ -248,8 +248,8 @@ const features = computed(() => [
   },
   {
     icon: '🤖',
-    title: t('AI Agent 通信', 'AI Agent Communication'),
-    desc: t('基于 NATS 的 $mq9.AI.API.* 扩展，原生支持 Agent 注册、发现、调用和编排', 'NATS-based $mq9.AI.API.* extension — native Agent registration, discovery, invocation, and orchestration'),
+    title: t('mq9 — 多 Agent 系统基础设施', 'mq9 — Multi-Agent Infrastructure'),
+    desc: t('将 Agent 注册、发现和可靠异步通信整合在同一个 broker。原生支持 A2A 协议，专为承载百万乃至亿级 Agent 而设计', 'Agent registration, discovery, and reliable async messaging in one broker. Native A2A support, designed to scale to millions of agents'),
   },
   {
     icon: '💾',
@@ -299,7 +299,7 @@ const features = computed(() => [
         </div>
 
         <h1 class="hero-title">
-          <span class="title-word title-robust">Robust</span><span class="title-word title-mq">MQ</span><a :href="isZh ? '/zh/mq9/' : '/en/mq9/'" class="title-mq9-badge">mq9</a>
+          <span class="title-word title-robust">Robust</span><span class="title-word title-mq">MQ</span><a :href="isZh ? 'https://mq9.robustmq.com/zh/' : 'https://mq9.robustmq.com/'" class="title-mq9-badge" target="_blank" rel="noopener">mq9</a>
         </h1>
 
         <p class="hero-sub">
@@ -314,9 +314,9 @@ const features = computed(() => [
         </p>
 
         <!-- mq9 callout -->
-        <a :href="isZh ? '/zh/mq9/' : '/en/mq9/'" class="mq9-callout">
+        <a :href="isZh ? 'https://mq9.robustmq.com/zh/' : 'https://mq9.robustmq.com/'" class="mq9-callout" target="_blank" rel="noopener">
           <span class="mq9-tag">mq9</span>
-          <span class="mq9-text">{{ t('为 AI Agent 设计的通信层 · Agent 邮箱，发出去对方上线自然收到', 'Communication layer for AI Agents · Agent mailbox — send now, receive when online') }}</span>
+          <span class="mq9-text">{{ t('多 Agent 系统基础设施 · 注册、发现、可靠异步通信，同一个 broker · 原生 A2A 支持', 'Multi-agent infrastructure · registry, discovery, reliable async messaging in one broker · native A2A support') }}</span>
           <span class="mq9-arrow">→</span>
         </a>
 
@@ -330,7 +330,7 @@ const features = computed(() => [
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
             GitHub
           </a>
-          <a class="btn btn-mq9" :href="isZh ? '/zh/mq9/' : '/en/mq9/'">
+          <a class="btn btn-mq9" :href="isZh ? 'https://mq9.robustmq.com/zh/' : 'https://mq9.robustmq.com/'" target="_blank" rel="noopener">
             <span class="btn-glow"></span>
             mq9（AI Agent）
             <span class="btn-arrow">→</span>

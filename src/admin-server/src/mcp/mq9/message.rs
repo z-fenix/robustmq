@@ -12,159 +12,311 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! MCP handlers for mq9 message operations.
-//!
-//! | Tool               | Backed by                                    |
-//! |--------------------|----------------------------------------------|
-//! | mq9_list_messages  | StorageDriverManager::read_by_tag            |
-//! | mq9_delete_message | StorageDriverManager::delete_by_offset       |
-//! | mq9_send_message   | StorageDriverManager::write (via MessageStorage) |
-
-use crate::state::NatsContext;
+use async_nats::{Client, HeaderMap, HeaderName, HeaderValue};
 use bytes::Bytes;
-use common_base::error::common::CommonError;
-use metadata_struct::adapter::adapter_record::AdapterWriteRecord;
-use metadata_struct::storage::adapter_read_config::AdapterReadConfig;
-use metadata_struct::storage::record::{StorageRecordProtocolData, StorageRecordProtocolDataMq9};
-use nats_broker::nats::subscribe::subject_message_tag;
-use nats_broker::storage::message::MessageStorage;
+use mq9_core::command::Mq9Command;
+use mq9_core::protocol::{
+    DeliverPolicy, MsgAckReply, MsgAckReq, MsgDeleteReply, MsgFetchConfig, MsgFetchReq,
+    MsgQueryReply, MsgQueryReq, MsgSendReply,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use storage_adapter::driver::StorageDriverManager;
 
-const DEFAULT_LIMIT: u32 = 20;
-const MAX_LIMIT: u32 = 500;
+use crate::mcp::error::McpToolError;
 
-#[derive(Debug, Deserialize)]
-pub struct ListMessagesArgs {
-    pub tenant: String,
-    pub mail_id: String,
-    /// Start read offset (inclusive). Default 0.
-    pub offset: Option<u64>,
-    /// Maximum number of messages to return. Default 20, max 500.
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeleteMessageArgs {
-    pub tenant: String,
-    pub mail_id: String,
-    /// Message offset / ID returned by list or send.
-    pub msg_id: u64,
-}
+// ── send ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct SendMessageArgs {
-    pub tenant: String,
-    pub mail_id: String,
-    /// Message priority string (e.g. "normal", "high"). Default "normal".
-    pub priority: Option<String>,
-    /// Message body as a UTF-8 string.
+    pub mail_address: String,
+    /// Message body (UTF-8 string).
     pub payload: String,
+    /// Priority: "normal" | "urgent" | "critical". Default "normal".
+    pub priority: Option<String>,
+    /// Dedup/compaction key. For the same key only the latest message is retained.
+    pub key: Option<String>,
+    /// Comma-separated tags, e.g. "billing,vip". Filterable via QUERY.
+    pub tags: Option<String>,
+    /// Delay delivery by this many seconds. msg_id will be -1 for delayed messages.
+    pub delay: Option<u64>,
+    /// Message-level TTL in seconds, independent of mailbox TTL.
+    pub ttl: Option<u64>,
 }
 
-/// List messages in a mailbox using read_by_tag for tag-scoped pagination.
-pub async fn list_messages(
-    _ctx: &NatsContext,
-    driver: &StorageDriverManager,
-    args: ListMessagesArgs,
-) -> Result<Value, CommonError> {
-    let limit = args.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as u64;
-    let start_offset = args.offset.unwrap_or(0);
-    let tag = subject_message_tag(&args.tenant, &args.mail_id);
+pub async fn send_message(client: &Client, args: SendMessageArgs) -> Result<Value, McpToolError> {
+    let subject = Mq9Command::MsgSend {
+        mail_address: args.mail_address.clone(),
+    }
+    .to_subject();
 
-    let read_config = AdapterReadConfig {
-        max_record_num: limit,
-        max_size: 1024 * 1024 * 30,
+    let mut headers = HeaderMap::new();
+    if let Some(p) = &args.priority {
+        headers.insert(
+            HeaderName::from_static("mq9-priority"),
+            HeaderValue::from(p.as_str()),
+        );
+    }
+    if let Some(k) = &args.key {
+        headers.insert(
+            HeaderName::from_static("mq9-key"),
+            HeaderValue::from(k.as_str()),
+        );
+    }
+    if let Some(t) = &args.tags {
+        headers.insert(
+            HeaderName::from_static("mq9-tags"),
+            HeaderValue::from(t.as_str()),
+        );
+    }
+    if let Some(d) = args.delay {
+        let v = d.to_string();
+        headers.insert(
+            HeaderName::from_static("mq9-delay"),
+            HeaderValue::from(v.as_str()),
+        );
+    }
+    if let Some(t) = args.ttl {
+        let v = t.to_string();
+        headers.insert(
+            HeaderName::from_static("mq9-ttl"),
+            HeaderValue::from(v.as_str()),
+        );
+    }
+
+    let msg = client
+        .request_with_headers(subject, headers, Bytes::from(args.payload))
+        .await
+        .map_err(|e| McpToolError::BrokerError(e.to_string()))?;
+
+    let reply: MsgSendReply = serde_json::from_slice(&msg.payload)?;
+    if !reply.error.is_empty() {
+        return Err(McpToolError::BrokerError(reply.error));
+    }
+
+    Ok(json!({
+        "msg_id": reply.msg_id,
+        "mail_address": args.mail_address,
+    }))
+}
+
+// ── fetch ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct FetchMessagesArgs {
+    pub mail_address: String,
+    /// Consumer group name. When provided, the broker tracks the read position per group
+    /// so the next fetch resumes where the last ack left off (stateful consumption).
+    /// When omitted, the broker uses a transient group — no position is saved and every
+    /// call starts fresh from `reset_to` (stateless / one-shot consumption).
+    pub group_name: Option<String>,
+    /// Where to start reading. Only takes effect when there is no saved position,
+    /// or when explicitly overriding with force reset.
+    /// "earliest" | "latest" (default) | "time:<unix_ts>" | "id:<msg_id>"
+    pub reset_to: Option<String>,
+    /// Maximum number of messages to return (default 100).
+    pub max_messages: Option<u32>,
+    /// How long the server waits when the mailbox is empty before returning (milliseconds).
+    /// Default 500ms. Set to 0 to return immediately without waiting.
+    pub max_wait_ms: Option<u64>,
+}
+
+pub async fn fetch_messages(
+    client: &Client,
+    args: FetchMessagesArgs,
+) -> Result<Value, McpToolError> {
+    let (deliver, from_time, from_id, force_deliver) = parse_reset_to(args.reset_to.as_deref());
+
+    let req = MsgFetchReq {
+        group_name: args.group_name,
+        deliver,
+        from_time,
+        from_id,
+        force_deliver,
+        config: Some(MsgFetchConfig {
+            num_msgs: args.max_messages,
+            max_wait_ms: args.max_wait_ms,
+        }),
     };
 
-    // Seed per-shard offsets so read starts from the requested position.
-    // We don't know shard names up front, so we use an empty map and let
-    // the driver start from 0, then skip records below start_offset.
-    let offsets: HashMap<String, u64> = HashMap::new();
-    let _ = start_offset; // driver reads from shard start; caller can paginate via returned msg_ids
+    let payload = Bytes::from(serde_json::to_string(&req)?);
+    let subject = Mq9Command::MsgFetch {
+        mail_address: args.mail_address,
+    }
+    .to_subject();
 
-    let records = driver
-        .read_by_tag(&args.tenant, &args.mail_id, &tag, &offsets, &read_config)
-        .await?;
+    let msg = client
+        .request(subject, payload)
+        .await
+        .map_err(|e| McpToolError::BrokerError(e.to_string()))?;
 
-    let messages: Vec<Value> = records
+    let reply: mq9_core::protocol::MsgFetchReply = serde_json::from_slice(&msg.payload)?;
+    if !reply.error.is_empty() {
+        return Err(McpToolError::BrokerError(reply.error));
+    }
+
+    let messages: Vec<Value> = reply
+        .messages
         .into_iter()
-        .filter(|r| r.metadata.offset >= start_offset)
-        .take(limit as usize)
-        .map(|r| {
-            let priority = r
-                .protocol_data
-                .as_ref()
-                .and_then(|pd| pd.mq9.as_ref())
-                .map(|m| m.priority.clone())
-                .unwrap_or_default();
+        .map(|m| {
             json!({
-                "msg_id":      r.metadata.offset,
-                "payload":     String::from_utf8_lossy(&r.data),
-                "priority":    priority,
-                "create_time": r.metadata.create_t,
+                "msg_id":      m.msg_id,
+                "payload":     m.payload,
+                "priority":    m.priority,
+                "create_time": m.create_time,
             })
         })
         .collect();
 
-    Ok(json!({
-        "mail_id":  args.mail_id,
-        "messages": messages,
-    }))
+    Ok(json!({ "messages": messages }))
 }
 
-/// Delete a specific message by its offset (msg_id).
-pub async fn delete_message(
-    _ctx: &NatsContext,
-    driver: &StorageDriverManager,
-    args: DeleteMessageArgs,
-) -> Result<Value, CommonError> {
-    driver
-        .delete_by_offset(&args.tenant, &args.mail_id, args.msg_id)
-        .await?;
-
-    Ok(json!({ "msg_id": args.msg_id, "deleted": true }))
+/// Parse the `reset_to` shorthand into low-level fetch parameters.
+///
+/// Supported values:
+/// - omitted        → resume from saved position; if none, start from latest (no force reset)
+/// - "earliest"     → force reset to the beginning of the mailbox
+/// - "latest"       → force reset, only receive new messages from now
+/// - "time:<ts>"    → force reset to the given Unix timestamp (seconds)
+/// - "id:<msg_id>"  → force reset to the given msg_id
+fn parse_reset_to(
+    reset_to: Option<&str>,
+) -> (DeliverPolicy, Option<u64>, Option<u64>, Option<bool>) {
+    match reset_to {
+        None => (DeliverPolicy::Latest, None, None, None),
+        Some("earliest") => (DeliverPolicy::Earliest, None, None, Some(true)),
+        Some("latest") => (DeliverPolicy::Latest, None, None, Some(true)),
+        Some(s) => {
+            if let Some(ts_str) = s.strip_prefix("time:") {
+                if let Ok(ts) = ts_str.parse::<u64>() {
+                    return (DeliverPolicy::FromTime, Some(ts), None, Some(true));
+                }
+            }
+            if let Some(id_str) = s.strip_prefix("id:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    return (DeliverPolicy::FromId, None, Some(id), Some(true));
+                }
+            }
+            (DeliverPolicy::Latest, None, None, Some(true))
+        }
+    }
 }
 
-/// Publish a message to a mailbox via MessageStorage.
-pub async fn send_message(
-    ctx: &NatsContext,
-    driver: &StorageDriverManager,
-    args: SendMessageArgs,
-) -> Result<Value, CommonError> {
-    // Verify the mailbox exists in cache.
-    if ctx
-        .cache_manager
-        .get_mail(&args.tenant, &args.mail_id)
-        .is_none()
-    {
-        return Err(CommonError::CommonError(format!(
-            "mailbox {} does not exist",
-            args.mail_id
-        )));
+// ── ack ───────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AckMessageArgs {
+    pub mail_address: String,
+    pub group_name: String,
+    /// The msg_id of the last successfully processed message.
+    pub msg_id: u64,
+}
+
+pub async fn ack_message(client: &Client, args: AckMessageArgs) -> Result<Value, McpToolError> {
+    let req = MsgAckReq {
+        group_name: args.group_name,
+        mail_address: args.mail_address.clone(),
+        msg_id: args.msg_id,
+    };
+    let payload = Bytes::from(serde_json::to_string(&req)?);
+    let subject = Mq9Command::MsgAck {
+        mail_address: args.mail_address,
+    }
+    .to_subject();
+
+    let msg = client
+        .request(subject, payload)
+        .await
+        .map_err(|e| McpToolError::BrokerError(e.to_string()))?;
+
+    let reply: MsgAckReply = serde_json::from_slice(&msg.payload)?;
+    if !reply.error.is_empty() {
+        return Err(McpToolError::BrokerError(reply.error));
     }
 
-    let priority_str = args.priority.unwrap_or_else(|| "normal".to_string());
-    let tag = subject_message_tag(&args.tenant, &args.mail_id);
+    Ok(json!({ "msg_id": args.msg_id, "acked": true }))
+}
 
-    let record = AdapterWriteRecord::new(args.mail_id.clone(), Bytes::from(args.payload))
-        .with_tags(vec![tag])
-        .with_protocol_data(Some(StorageRecordProtocolData {
-            mq9: Some(StorageRecordProtocolDataMq9 {
-                priority: priority_str,
-                header: None,
-            }),
-            nats: None,
-            mqtt: None,
-        }));
+// ── query ─────────────────────────────────────────────────────────────────────
 
-    let storage = MessageStorage::new(driver.clone().into());
-    let offsets = storage
-        .write(&args.tenant, &args.mail_id, vec![record])
-        .await?;
+#[derive(Debug, Deserialize)]
+pub struct QueryMailboxArgs {
+    pub mail_address: String,
+    /// Filter by message key (exact match).
+    pub key: Option<String>,
+    /// Filter by tags (messages must carry ALL specified tags).
+    pub tags: Option<Vec<String>>,
+    /// Only return messages created after this Unix timestamp (seconds).
+    pub since: Option<u64>,
+    /// Maximum number of messages to return (default 20).
+    pub limit: Option<u64>,
+}
 
-    let msg_id = offsets.into_iter().next().unwrap_or(0);
-    Ok(json!({ "msg_id": msg_id, "mail_id": args.mail_id }))
+pub async fn query_mailbox(client: &Client, args: QueryMailboxArgs) -> Result<Value, McpToolError> {
+    let req = MsgQueryReq {
+        key: args.key,
+        tags: args.tags,
+        since: args.since,
+        limit: args.limit,
+    };
+    let payload = Bytes::from(serde_json::to_string(&req)?);
+    let subject = Mq9Command::MsgQuery {
+        mail_address: args.mail_address,
+    }
+    .to_subject();
+
+    let msg = client
+        .request(subject, payload)
+        .await
+        .map_err(|e| McpToolError::BrokerError(e.to_string()))?;
+
+    let reply: MsgQueryReply = serde_json::from_slice(&msg.payload)?;
+    if !reply.error.is_empty() {
+        return Err(McpToolError::BrokerError(reply.error));
+    }
+
+    let messages: Vec<Value> = reply
+        .messages
+        .into_iter()
+        .map(|m| {
+            json!({
+                "msg_id":      m.msg_id,
+                "payload":     m.payload,
+                "priority":    m.priority,
+                "create_time": m.create_time,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "messages": messages }))
+}
+
+// ── delete ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteMessageArgs {
+    pub mail_address: String,
+    pub msg_id: u64,
+}
+
+pub async fn delete_message(
+    client: &Client,
+    args: DeleteMessageArgs,
+) -> Result<Value, McpToolError> {
+    let subject = Mq9Command::MsgDelete {
+        mail_address: args.mail_address,
+        msg_id: args.msg_id.to_string(),
+    }
+    .to_subject();
+
+    let msg = client
+        .request(subject, Bytes::new())
+        .await
+        .map_err(|e| McpToolError::BrokerError(e.to_string()))?;
+
+    let reply: MsgDeleteReply = serde_json::from_slice(&msg.payload)?;
+    if !reply.error.is_empty() {
+        return Err(McpToolError::BrokerError(reply.error));
+    }
+
+    Ok(json!({ "msg_id": args.msg_id, "deleted": true }))
 }

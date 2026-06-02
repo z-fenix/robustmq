@@ -15,10 +15,11 @@
 use super::cache::MQTTCacheManager;
 use super::error::MqttBrokerError;
 use super::topic::try_init_topic;
+use crate::core::message::build_message_expire;
 use crate::core::offline_message::build_mqtt_protocol_data;
-use crate::core::{retain::RetainMessageManager, tool::ResultMqttBrokerError};
+use crate::core::{retain::save_retain_message, tool::ResultMqttBrokerError};
+use crate::storage::last_will::LastWillStorage;
 use crate::storage::message::MessageStorage;
-use crate::storage::session::SessionStorage;
 use bytes::Bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::lastwill::MqttLastWillData;
@@ -28,9 +29,7 @@ use protocol::mqtt::common::{LastWill, LastWillProperties, Publish, PublishPrope
 use std::sync::Arc;
 use storage_adapter::driver::StorageDriverManager;
 
-#[allow(clippy::too_many_arguments)]
 pub async fn send_last_will_message(
-    retain_message_manager: &Arc<RetainMessageManager>,
     cache_manager: &Arc<MQTTCacheManager>,
     storage_driver_manager: &Arc<StorageDriverManager>,
     client_pool: &Arc<ClientPool>,
@@ -63,30 +62,29 @@ pub async fn send_last_will_message(
             .await?;
 
     // save retain message
-    retain_message_manager
-        .save_retain_message(
-            &last_will.tenant,
-            &topic_name,
-            &publish,
-            &publish_properties,
-        )
-        .await?;
-
-    // save message
-    let mqtt_data = build_mqtt_protocol_data(
+    save_retain_message(
+        storage_driver_manager,
         cache_manager,
-        &last_will.client_id,
+        &last_will.tenant,
+        &topic_name,
         &publish,
         &publish_properties,
     )
-    .await;
+    .await?;
 
+    // save message
+    let mqtt_data =
+        build_mqtt_protocol_data(&last_will.client_id, &publish, &publish_properties).await;
+
+    let message_expire = build_message_expire(cache_manager, &publish_properties).await;
     let record = AdapterWriteRecord::new(topic_name.to_string(), publish.payload.clone())
         .with_protocol_data(Some(StorageRecordProtocolData {
             mqtt: Some(mqtt_data),
             nats: None,
             mq9: None,
-        }));
+        }))
+        .with_expire_at(message_expire);
+
     let message_storage = MessageStorage::new(storage_driver_manager.clone());
     message_storage
         .append_topic_message(&topic.tenant, &topic.topic_name, vec![record])
@@ -129,13 +127,13 @@ pub async fn save_last_will_message(
     client_id: &str,
     last_will: &Option<LastWill>,
     last_will_properties: &Option<LastWillProperties>,
-    client_pool: &Arc<ClientPool>,
+    storage_driver_manager: &Arc<StorageDriverManager>,
 ) -> ResultMqttBrokerError {
     if last_will.is_none() {
         return Ok(());
     }
 
-    let session_storage = SessionStorage::new(client_pool.clone());
+    let last_will_storage = LastWillStorage::new(storage_driver_manager.clone());
     let lastwill = MqttLastWillData {
         tenant: tenant.to_string(),
         client_id: client_id.to_string(),
@@ -143,8 +141,8 @@ pub async fn save_last_will_message(
         last_will_properties: last_will_properties.clone(),
     };
 
-    session_storage
-        .save_last_will_message(client_id.to_string(), lastwill.encode()?)
+    last_will_storage
+        .save_last_will_message(tenant, client_id, &lastwill)
         .await?;
 
     Ok(())

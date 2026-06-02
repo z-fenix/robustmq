@@ -14,50 +14,86 @@
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    use async_nats::Client;
+    use async_nats::{Client, HeaderMap};
     use bytes::Bytes;
     use common_base::uuid::unique_id;
-    use futures::StreamExt;
     use metadata_struct::mq9::Priority;
     use mq9_core::command::Mq9Command;
-    use mq9_core::protocol::{CreateMailboxReq, Mq9Reply};
+    use mq9_core::protocol::{
+        DeliverPolicy, MailboxCreateReply, MailboxCreateReq, MsgFetchConfig, MsgFetchReply,
+        MsgFetchReq, MsgSendReply,
+    };
+    use std::time::Duration;
     use tokio::time::sleep;
 
-    const NATS_ADDR: &str = "nats://127.0.0.1:4222";
+    use crate::nats::common::nats_connect;
 
-    async fn nats_connect() -> Client {
-        async_nats::connect(NATS_ADDR).await.unwrap()
-    }
-
-    async fn nats_request(client: &Client, subject: String, payload: Bytes) -> Mq9Reply {
+    async fn request<T: serde::de::DeserializeOwned>(
+        client: &Client,
+        subject: String,
+        payload: Bytes,
+    ) -> T {
         let msg = client.request(subject, payload).await.unwrap();
-        serde_json::from_slice::<Mq9Reply>(&msg.payload).unwrap_or_else(|_| {
+        serde_json::from_slice::<T>(&msg.payload).unwrap_or_else(|_| {
             panic!(
-                "failed to parse Mq9Reply, raw: {}",
+                "failed to parse reply, raw: {}",
                 String::from_utf8_lossy(&msg.payload)
             )
         })
     }
 
-    async fn create_mail(client: &Client, req: &CreateMailboxReq) -> Mq9Reply {
+    async fn create_mail(client: &Client, req: &MailboxCreateReq) -> MailboxCreateReply {
         let payload = Bytes::from(serde_json::to_string(req).unwrap());
-        nats_request(client, Mq9Command::MailboxCreate.to_subject(), payload).await
+        request(client, Mq9Command::MailboxCreate.to_subject(), payload).await
     }
 
     async fn publish(
         client: &Client,
-        mail_id: &str,
+        mail_address: &str,
         priority: Priority,
         payload: &str,
-    ) -> Mq9Reply {
-        let subject = Mq9Command::MailboxMsg {
-            mail_id: mail_id.to_string(),
-            priority,
+    ) -> MsgSendReply {
+        let subject = Mq9Command::MsgSend {
+            mail_address: mail_address.to_string(),
         }
         .to_subject();
-        nats_request(client, subject, Bytes::from(payload.to_string())).await
+        let mut headers = HeaderMap::new();
+        headers.insert("mq9-priority", priority.to_string().as_str());
+        let msg = client
+            .request_with_headers(subject, headers, Bytes::from(payload.to_string()))
+            .await
+            .unwrap();
+        serde_json::from_slice::<MsgSendReply>(&msg.payload).unwrap_or_else(|_| {
+            panic!(
+                "failed to parse send reply: {}",
+                String::from_utf8_lossy(&msg.payload)
+            )
+        })
+    }
+
+    async fn fetch(
+        client: &Client,
+        mail_address: &str,
+        group_name: &str,
+        num_msgs: u32,
+    ) -> MsgFetchReply {
+        let req = MsgFetchReq {
+            group_name: Some(group_name.to_string()),
+            deliver: DeliverPolicy::Earliest,
+            from_time: None,
+            from_id: None,
+            force_deliver: None,
+            config: Some(MsgFetchConfig {
+                num_msgs: Some(num_msgs),
+                max_wait_ms: None,
+            }),
+        };
+        let payload = Bytes::from(serde_json::to_string(&req).unwrap());
+        let subject = Mq9Command::MsgFetch {
+            mail_address: mail_address.to_string(),
+        }
+        .to_subject();
+        request(client, subject, payload).await
     }
 
     // Messages sent with mixed priorities must be delivered in
@@ -65,18 +101,17 @@ mod tests {
     #[tokio::test]
     async fn test_priority() {
         let client = nats_connect().await;
+        let group_name = format!("grp-{}", unique_id());
 
         // ── 1. create mail ────────────────────────────────────────────────────
-        let req = CreateMailboxReq {
+        let req = MailboxCreateReq {
+            name: Some(format!("test{}", unique_id().to_lowercase())),
             ttl: None,
-            public: false,
-            name: None,
-            prefix: None,
-            desc: "priority test mail".to_string(),
+            desc: None,
         };
         let reply = create_mail(&client, &req).await;
-        assert!(!reply.is_error(), "create mail error: {}", reply.error);
-        let mail_id = reply.mail_id.unwrap();
+        assert!(reply.error.is_empty(), "create mail error: {}", reply.error);
+        let mail_address = reply.mail_address;
 
         sleep(Duration::from_secs(3)).await;
 
@@ -99,57 +134,44 @@ mod tests {
         for (payload, priority) in &msgs {
             let tag = format!("[{}] {}-{}", priority, payload, unique_id());
             println!("[SEND] {}", tag);
-            let reply = publish(&client, &mail_id, priority.clone(), &tag).await;
+            let reply = publish(&client, &mail_address, priority.clone(), &tag).await;
             assert!(
-                !reply.is_error(),
+                reply.error.is_empty(),
                 "pub '{}' error: {}",
                 payload,
                 reply.error
             );
         }
 
-        // ── 3. subscribe to mail ──────────────────────────────────────────────
-        let sub_subject = Mq9Command::MailboxSub {
-            mail_id: mail_id.clone(),
-        }
-        .to_subject();
-        let mut sub = client.subscribe(sub_subject).await.unwrap();
-
-        // ── 4. collect 10 messages with timeout ───────────────────────────────
-        let mut received: Vec<String> = Vec::with_capacity(10);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while received.len() < 10 {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(remaining, sub.next()).await {
-                Ok(Some(msg)) => {
-                    let payload = String::from_utf8_lossy(&msg.payload).to_string();
-                    let ts = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis();
-                    println!("[RECV {}ms] {}", ts, payload);
-                    received.push(payload);
-                }
-                _ => break,
-            }
-        }
-
+        // ── 3. fetch all 10 messages ──────────────────────────────────────────
+        let fetch_reply = fetch(&client, &mail_address, &group_name, 10).await;
+        assert!(
+            fetch_reply.error.is_empty(),
+            "fetch error: {}",
+            fetch_reply.error
+        );
         assert_eq!(
-            received.len(),
+            fetch_reply.messages.len(),
             10,
             "expected 10 messages, got {}",
-            received.len()
+            fetch_reply.messages.len()
         );
 
-        // ── 5. verify priority order: all Critical before Urgent before Normal ─
-        // Each received payload starts with the priority label we embedded above.
+        let received: Vec<String> = fetch_reply
+            .messages
+            .iter()
+            .map(|m| m.payload.clone())
+            .collect();
+
+        for (i, payload) in received.iter().enumerate() {
+            println!("[RECV {}] {}", i, payload);
+        }
+
+        // ── 4. verify priority order: all Critical before Urgent before Normal ─
         fn priority_rank(payload: &str) -> u8 {
-            if payload.starts_with("critical") {
+            if payload.contains("[critical]") || payload.contains("critical-") {
                 0
-            } else if payload.starts_with("urgent") {
+            } else if payload.contains("[urgent]") || payload.contains("urgent-") {
                 1
             } else {
                 2

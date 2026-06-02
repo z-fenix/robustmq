@@ -14,11 +14,10 @@
 
 use crate::core::cache::MetaCacheManager;
 use crate::core::error::MetaServiceError;
+use crate::storage::common::share_group::ShareGroupStorage;
 use crate::storage::mqtt::acl::AclStorage;
 use crate::storage::mqtt::blacklist::MqttBlackListStorage;
 use crate::storage::mqtt::connector::MqttConnectorStorage;
-use crate::storage::mqtt::group_leader::MqttGroupLeaderStorage;
-use crate::storage::mqtt::lastwill::MqttLastWillStorage;
 use crate::storage::mqtt::session::MqttSessionStorage;
 use crate::storage::mqtt::subscribe::MqttSubscribeStorage;
 use crate::storage::mqtt::topic::MqttTopicStorage;
@@ -27,6 +26,7 @@ use crate::storage::topic_delete::TopicDeleteStorage;
 use broker_core::cache::NodeCacheManager;
 use bytes::Bytes;
 use common_base::tools::now_millis;
+use common_base::utils::serialize;
 use delay_task::manager::DelayTaskManager;
 use delay_task::{DelayTask, DelayTaskData};
 use metadata_struct::auth::acl::SecurityAcl;
@@ -34,22 +34,22 @@ use metadata_struct::auth::blacklist::SecurityBlackList;
 use metadata_struct::auth::user::SecurityUser;
 use metadata_struct::connector::MQTTConnector;
 use metadata_struct::mqtt::auto_subscribe::MqttAutoSubscribeRule;
-use metadata_struct::mqtt::group_leader::MqttGroupLeader;
-use metadata_struct::mqtt::lastwill::MqttLastWillData;
-use metadata_struct::mqtt::retain_message::MQTTRetainMessage;
 use metadata_struct::mqtt::session::MqttSession;
+use metadata_struct::mqtt::share_group::{ShareGroup, ShareGroupMember};
 use metadata_struct::mqtt::subscribe::MqttSubscribe;
 use metadata_struct::mqtt::topic::Topic;
 use metadata_struct::mqtt::topic_rewrite_rule::MqttTopicRewriteRule;
 use prost::Message as _;
+use protocol::meta::meta_service_common::{
+    AddShareGroupMemberRequest, DeleteShareGroupMemberRequest,
+};
 use protocol::meta::meta_service_mqtt::{
     CreateAclRequest, CreateAutoSubscribeRuleRequest, CreateBlacklistRequest,
     CreateConnectorRequest, CreateSessionRequest, CreateTopicRequest,
     CreateTopicRewriteRuleRequest, CreateUserRequest, DeleteAclRequest,
     DeleteAutoSubscribeRuleRequest, DeleteBlacklistRequest, DeleteConnectorRequest,
     DeleteSessionRequest, DeleteSubscribeRequest, DeleteTopicRequest,
-    DeleteTopicRewriteRuleRequest, DeleteUserRequest, SaveLastWillMessageRequest,
-    SetSubscribeRequest, SetTopicRetainMessageRequest,
+    DeleteTopicRewriteRuleRequest, DeleteUserRequest, SetSubscribeRequest,
 };
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
@@ -103,55 +103,23 @@ impl DataRouteMqtt {
 
     pub fn delete_topic(&self, value: Bytes) -> Result<(), MetaServiceError> {
         let req = DeleteTopicRequest::decode(value.as_ref())?;
-        // save topic
         let topic_storage = MqttTopicStorage::new(self.rocksdb_engine_handler.clone());
         let mut topic = match topic_storage.get(&req.tenant, &req.topic_name)? {
             Some(t) => t,
             None => return Ok(()),
         };
-        topic.mark_delete = true;
-        topic_storage.save(topic.clone())?;
-
-        // save topic delete
         let delete_storage = TopicDeleteStorage::new(self.rocksdb_engine_handler.clone());
-        delete_storage.save(&topic)?;
-        Ok(())
-    }
 
-    // Retain Message
-    pub fn set_retain_message(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let req = SetTopicRetainMessageRequest::decode(value.as_ref())?;
-        let storage = MqttTopicStorage::new(self.rocksdb_engine_handler.clone());
-
-        if storage.get(&req.tenant, &req.topic_name)?.is_none() {
-            return Ok(());
+        if topic.mark_delete {
+            // Final cleanup: shards already confirmed deleted, remove all records.
+            delete_storage.delete(&topic.topic_id)?;
+            topic_storage.delete(&req.tenant, &req.topic_name)?;
+        } else {
+            // Initial mark: flag topic for deletion and enqueue in TopicDeleteStorage.
+            topic.mark_delete = true;
+            topic_storage.save(topic.clone())?;
+            delete_storage.save(&topic)?;
         }
-
-        if let Some(retain) = req.retain_message {
-            let message = MQTTRetainMessage::decode(&retain)?;
-            storage.save_retain_message(message)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn delete_retain_message(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let req = SetTopicRetainMessageRequest::decode(value.as_ref())?;
-        let storage = MqttTopicStorage::new(self.rocksdb_engine_handler.clone());
-
-        if storage.get(&req.tenant, &req.topic_name)?.is_none() {
-            return Ok(());
-        }
-        storage.delete_retain_message(&req.tenant, &req.topic_name)?;
-        Ok(())
-    }
-
-    // LastWill Message
-    pub fn save_last_will_message(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let req = SaveLastWillMessageRequest::decode(value.as_ref())?;
-        let storage = MqttLastWillStorage::new(self.rocksdb_engine_handler.clone());
-        let last_will_message = MqttLastWillData::decode(&req.last_will_message)?;
-        storage.save(&req.client_id, last_will_message)?;
         Ok(())
     }
 
@@ -308,19 +276,34 @@ impl DataRouteMqtt {
 
     // Group Leader
     pub fn create_group_leader(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let leader = MqttGroupLeader::decode(&value)?;
-        let storage = MqttGroupLeaderStorage::new(self.rocksdb_engine_handler.clone());
-        storage.save(&leader.tenant, &leader.group_name, leader.broker_id)?;
+        let leader = ShareGroup::decode(&value)?;
+        let storage = ShareGroupStorage::new(self.rocksdb_engine_handler.clone());
+        storage.save(leader.clone())?;
         self.cache_manager.add_group_leader(leader);
         Ok(())
     }
 
     pub fn delete_group_leader(&self, value: Bytes) -> Result<(), MetaServiceError> {
-        let leader = MqttGroupLeader::decode(&value)?;
-        let storage = MqttGroupLeaderStorage::new(self.rocksdb_engine_handler.clone());
+        let leader = ShareGroup::decode(&value)?;
+        let storage = ShareGroupStorage::new(self.rocksdb_engine_handler.clone());
         storage.delete(&leader.tenant, &leader.group_name)?;
         self.cache_manager
             .remove_group_leader(&leader.tenant, &leader.group_name);
+        Ok(())
+    }
+
+    pub fn add_group_member(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = AddShareGroupMemberRequest::decode(value.as_ref())?;
+        let member: ShareGroupMember = serialize::deserialize(&req.data)?;
+        let storage = ShareGroupStorage::new(self.rocksdb_engine_handler.clone());
+        storage.save_member(&member)?;
+        Ok(())
+    }
+
+    pub fn delete_group_member(&self, value: Bytes) -> Result<(), MetaServiceError> {
+        let req = DeleteShareGroupMemberRequest::decode(value.as_ref())?;
+        let storage = ShareGroupStorage::new(self.rocksdb_engine_handler.clone());
+        storage.delete_member(req.broker_id, req.connect_id, &req.sid)?;
         Ok(())
     }
 

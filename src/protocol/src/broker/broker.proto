@@ -22,6 +22,7 @@ service BrokerService {
   rpc SendLastWillMessage(SendLastWillMessageRequest) returns (SendLastWillMessageReply) {}
   rpc GetQosDataByClientId(GetQosDataByClientIdRequest) returns (GetQosDataByClientIdReply) {}
   rpc GetShardSegmentDeleteStatus(GetShardSegmentDeleteStatusRequest) returns (GetShardSegmentDeleteStatusReply) {}
+  rpc SendNatsShareGroupMessage(SendNatsShareGroupMessageRequest) returns (SendNatsShareGroupMessageReply) {}
 }
 
 message UpdateCacheRequest {
@@ -41,13 +42,13 @@ message UpdateCacheReply {
 
 message SendLastWillMessageReply {}
 
-message SendLastWillMessageRequest {
-  repeated LastWillMessageItem items = 1;
+message LastWillClientItem {
+  string tenant = 1;
+  string client_id = 2;
 }
 
-message LastWillMessageItem {
-  string client_id = 1;
-  bytes last_will_message = 2;
+message SendLastWillMessageRequest {
+  repeated LastWillClientItem items = 1;
 }
 
 message GetQosDataByClientIdRequest {
@@ -81,6 +82,14 @@ message GetShardSegmentDeleteStatusReply {
   repeated ShardSegmentDeleteStatus results = 1;
 }
 
+message SendNatsShareGroupMessageRequest {
+  uint64 connect_id = 1;
+  string sid = 2;
+  bytes record = 3;
+}
+
+message SendNatsShareGroupMessageReply {}
+
 enum BrokerUpdateCacheResourceType {
   Session = 0;
   User = 1;
@@ -100,8 +109,11 @@ enum BrokerUpdateCacheResourceType {
   AutoSubscribeRule = 15;
   TopicRewriteRule = 16;
   NatsSubscribe = 17;
-  Mq9Email = 18;
-  Group = 19;
+  Mq9Mail = 18;
+  ShareGroup = 19;
+  ShareGroupMember = 20;
+  GroupOffset = 21;
+  Mq9Agent = 22;
 }
 
 enum BrokerUpdateCacheActionType {
