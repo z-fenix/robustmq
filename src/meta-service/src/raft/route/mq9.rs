@@ -64,6 +64,7 @@ impl DataRouteMq9 {
         tokio::spawn(async move {
             if let Ok(card) = serde_json::from_str(&agent_info) {
                 let text = search_engine::agent::embed_text(&card);
+                #[cfg(feature = "embedding")]
                 match llm_engine::embedding::fastembed::embed(&text).await {
                     Ok(vector) => {
                         if let Err(e) = search_engine::agent::register_agent(
@@ -79,6 +80,8 @@ impl DataRouteMq9 {
                     }
                     Err(e) => warn!("agent embed failed: {e}"),
                 }
+                #[cfg(not(feature = "embedding"))]
+                warn!("embedding feature disabled, skip agent vector indexing");
             }
         });
 

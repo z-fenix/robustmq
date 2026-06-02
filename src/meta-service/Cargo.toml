@@ -50,7 +50,10 @@ delay-task.workspace = true
 storage-adapter.workspace = true
 node-call.workspace = true
 search-engine.workspace = true
-llm-engine.workspace = true
+llm-engine = { workspace = true, optional = true }
+
+[features]
+embedding = ["llm-engine", "llm-engine/fastembed-impl"]
 
 [dev-dependencies]
 tempfile.workspace = true

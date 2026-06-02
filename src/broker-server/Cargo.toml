@@ -59,8 +59,11 @@ node-call.workspace = true
 connector.workspace = true
 common-healthy.workspace = true
 async-nats.workspace = true
-llm-engine.workspace = true
+llm-engine = { workspace = true, optional = true }
 search-engine.workspace = true
+
+[features]
+embedding = ["llm-engine", "llm-engine/fastembed-impl"]
 
 [target.'cfg(not(windows))'.dependencies]
 pprof.workspace = true

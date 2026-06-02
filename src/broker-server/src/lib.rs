@@ -36,6 +36,7 @@ use delay_message::manager::DelayMessageManager;
 use delay_task::manager::DelayTaskManager;
 use grpc_clients::pool::ClientPool;
 use kafka_broker::broker::KafkaBrokerServerParams;
+#[cfg(feature = "embedding")]
 use llm_engine::embedding::fastembed;
 use meta_service::MetaServiceServerParams;
 use mqtt_broker::broker::MqttBrokerServerParams;
@@ -451,6 +452,7 @@ impl BrokerServer {
                 std::process::exit(1);
             }
 
+            #[cfg(feature = "embedding")]
             if let Err(e) = fastembed::init() {
                 error!("Failed to initialize fastembed: {}", e);
                 std::process::exit(1);

@@ -105,12 +105,21 @@ pub async fn search_agent_by_req(
     };
 
     let results = if !req.semantic.is_empty() {
-        let vector = llm_engine::embedding::fastembed::embed(&req.semantic)
-            .await
-            .map_err(|e| MetaServiceError::CommonError(e.to_string()))?;
-        search_engine::agent::search_agents_by_vector(vector, limit, offset, tenant)
-            .await
-            .map_err(|e| MetaServiceError::CommonError(e.to_string()))?
+        #[cfg(feature = "embedding")]
+        {
+            let vector = llm_engine::embedding::fastembed::embed(&req.semantic)
+                .await
+                .map_err(|e| MetaServiceError::CommonError(e.to_string()))?;
+            search_engine::agent::search_agents_by_vector(vector, limit, offset, tenant)
+                .await
+                .map_err(|e| MetaServiceError::CommonError(e.to_string()))?
+        }
+        #[cfg(not(feature = "embedding"))]
+        {
+            return Err(MetaServiceError::CommonError(
+                "semantic search unavailable: embedding feature is disabled".to_string(),
+            ));
+        }
     } else if !req.text.is_empty() {
         search_engine::agent::search_agents_by_text(&req.text, limit, offset, tenant)
             .await
