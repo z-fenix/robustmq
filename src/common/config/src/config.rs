@@ -38,10 +38,14 @@ use super::default::{
     default_schema_log_level, default_schema_strategy, default_session_expiry_interval,
     default_slow_subscribe_delay_type, default_slow_subscribe_record_time,
     default_storage_expire_scan_task_num, default_storage_io_thread_num,
-    default_storage_max_segment_size, default_storage_offset_enable_cache,
-    default_storage_tcp_port, default_system_monitor_cpu_watermark,
-    default_system_monitor_memory_watermark, default_system_monitor_topic_interval_ms,
-    default_tls_cert, default_tls_key, default_topic_alias_max,
+    default_storage_isr_maintain_interval_ms, default_storage_max_segment_size,
+    default_storage_metadata_reconcile_interval_ms, default_storage_num_replica_fetchers,
+    default_storage_offset_enable_cache, default_storage_replica_fetch_backoff_ms,
+    default_storage_replica_fetch_max_wait_ms, default_storage_replica_fetch_min_bytes,
+    default_storage_replica_lag_time_max_ms, default_storage_tcp_port,
+    default_system_monitor_cpu_watermark, default_system_monitor_memory_watermark,
+    default_system_monitor_topic_interval_ms, default_tls_cert, default_tls_key,
+    default_topic_alias_max, default_topic_partition_num, default_topic_replica_num,
 };
 use crate::common::default_log;
 use crate::common::Log;
@@ -314,6 +318,12 @@ pub struct Runtime {
 
     #[serde(default)]
     pub pprof_enable: bool,
+
+    #[serde(default = "default_topic_partition_num")]
+    pub default_topic_partition_num: u32,
+
+    #[serde(default = "default_topic_replica_num")]
+    pub default_topic_replica_num: u32,
 }
 
 impl Default for Runtime {
@@ -429,6 +439,10 @@ pub struct MetaRuntime {
     pub data_raft_group_num: u32,
     #[serde(default = "default_group_offset_expire_sec")]
     pub group_offset_expire_sec: u64,
+    #[serde(default = "default_segment_leader_rebalance_interval_ms")]
+    pub segment_leader_rebalance_interval_ms: u64,
+    #[serde(default = "default_segment_leader_rebalance_max_moves")]
+    pub segment_leader_rebalance_max_moves: u32,
 }
 
 fn default_raft_sharded_group_num() -> u32 {
@@ -438,6 +452,14 @@ fn default_raft_sharded_group_num() -> u32 {
 fn default_group_offset_expire_sec() -> u64 {
     // 7 days
     7 * 24 * 3600
+}
+
+fn default_segment_leader_rebalance_interval_ms() -> u64 {
+    60_000
+}
+
+fn default_segment_leader_rebalance_max_moves() -> u32 {
+    50
 }
 
 impl Default for MetaRuntime {
@@ -705,6 +727,20 @@ pub struct StorageRuntime {
     pub offset_enable_cache: bool,
     #[serde(default = "default_storage_expire_scan_task_num")]
     pub expire_scan_task_num: usize,
+    #[serde(default = "default_storage_num_replica_fetchers")]
+    pub num_replica_fetchers: u32,
+    #[serde(default = "default_storage_replica_fetch_min_bytes")]
+    pub replica_fetch_min_bytes: u64,
+    #[serde(default = "default_storage_replica_fetch_max_wait_ms")]
+    pub replica_fetch_max_wait_ms: u64,
+    #[serde(default = "default_storage_replica_fetch_backoff_ms")]
+    pub replica_fetch_backoff_ms: u64,
+    #[serde(default = "default_storage_replica_lag_time_max_ms")]
+    pub replica_lag_time_max_ms: u64,
+    #[serde(default = "default_storage_metadata_reconcile_interval_ms")]
+    pub metadata_reconcile_interval_ms: u64,
+    #[serde(default = "default_storage_isr_maintain_interval_ms")]
+    pub isr_maintain_interval_ms: u64,
     #[serde(default = "default_network")]
     pub network: Network,
 }

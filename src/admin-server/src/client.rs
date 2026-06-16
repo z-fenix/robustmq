@@ -628,6 +628,17 @@ impl AdminHttpClient {
         self.post_raw(&api_path(TENANT_DELETE_PATH), request).await
     }
 
+    // ========== Node APIs ==========
+
+    /// Permanently remove a node from the cluster (scale-in).
+    pub async fn node_leave<T>(&self, request: &T) -> Result<String, HttpClientError>
+    where
+        T: Serialize,
+    {
+        self.post_raw(&api_path(CLUSTER_NODE_LEAVE_PATH), request)
+            .await
+    }
+
     /// Get MQTT tenant list
     pub async fn get_mqtt_tenant_list<T, R>(
         &self,
@@ -794,6 +805,16 @@ impl AdminHttpClient {
         T: Serialize,
     {
         self.post_raw(&api_path(STORAGE_ENGINE_SEGMENT_LIST_PATH), request)
+            .await
+    }
+
+    /// Get segment detail with per-replica state
+    pub async fn get_segment_detail<T, R>(&self, request: &T) -> Result<R, HttpClientError>
+    where
+        T: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        self.post(&api_path(STORAGE_ENGINE_SEGMENT_DETAIL_PATH), request)
             .await
     }
 

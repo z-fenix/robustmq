@@ -16,7 +16,7 @@
 use common_base::{error::common::CommonError, utils::serialize};
 use rocksdb::{
     BlockBasedOptions, BoundColumnFamily, Cache, ColumnFamilyDescriptor, DBCompactionStyle,
-    DBCompressionType, Options, SliceTransform, DB,
+    DBCompressionType, Options, ReadOptions, SliceTransform, DB,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -175,13 +175,25 @@ impl RocksDBEngine {
         Ok(output)
     }
 
-    // Search data by prefix
+    /// ReadOptions with `total_order_seek` enabled — required for correct
+    /// prefix/range scans because this DB uses a 10-byte fixed-prefix extractor
+    /// while metadata keys are longer (e.g. `/meta/tenant/<name>`). Without it a
+    /// seek iterator is bounded to the seek key's prefix-bloom domain and can
+    /// skip matching keys in other memtable/SST blocks.
+    fn total_order_read_opts() -> ReadOptions {
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        opts
+    }
+
     pub fn read_prefix(
         &self,
         cf: Arc<BoundColumnFamily<'_>>,
         search_key: &str,
     ) -> Result<Vec<(String, Vec<u8>)>, CommonError> {
-        let mut iter = self.db.raw_iterator_cf(&cf);
+        let mut iter = self
+            .db
+            .raw_iterator_cf_opt(&cf, Self::total_order_read_opts());
         iter.seek(search_key);
 
         let mut result = Vec::with_capacity(64); // Pre-allocate capacity
@@ -205,6 +217,39 @@ impl RocksDBEngine {
         Ok(result)
     }
 
+    /// Iterate keys under `prefix` starting at `seek_key` (>= seek_key), stopping
+    /// at the first key >= `until_key` (exclusive) or once `prefix` no longer
+    /// matches. Avoids materializing the whole prefix when the caller only wants
+    /// a bounded range — used by the ISR replica read path.
+    pub fn read_prefix_from(
+        &self,
+        cf: Arc<BoundColumnFamily<'_>>,
+        prefix: &str,
+        seek_key: &str,
+        until_key: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, CommonError> {
+        let mut iter = self
+            .db
+            .raw_iterator_cf_opt(&cf, Self::total_order_read_opts());
+        iter.seek(seek_key);
+
+        let mut result = Vec::with_capacity(64);
+        while iter.valid() {
+            let Some(key_bytes) = iter.key() else {
+                break;
+            };
+            let key = String::from_utf8(key_bytes.to_vec())?;
+            if !key.starts_with(prefix) || key.as_str() >= until_key {
+                break;
+            }
+            if let Some(val) = iter.value() {
+                result.push((key, val.to_vec()));
+            }
+            iter.next();
+        }
+        Ok(result)
+    }
+
     // Search data by prefix
     pub fn read_list_by_model(
         &self,
@@ -213,7 +258,10 @@ impl RocksDBEngine {
     ) -> Result<Vec<(String, Vec<u8>)>, CommonError> {
         let mut result = Vec::with_capacity(64); // Pre-allocate capacity
 
-        for item in self.db.iterator_cf(&cf, *mode) {
+        for item in self
+            .db
+            .iterator_cf_opt(&cf, Self::total_order_read_opts(), *mode)
+        {
             let (k, value) = item?;
             let key = String::from_utf8(k.to_vec())?;
             result.push((key, value.to_vec()));
@@ -226,7 +274,9 @@ impl RocksDBEngine {
         &self,
         cf: Arc<BoundColumnFamily<'_>>,
     ) -> Result<Vec<(String, Vec<u8>)>, CommonError> {
-        let mut iter = self.db.raw_iterator_cf(&cf);
+        let mut iter = self
+            .db
+            .raw_iterator_cf_opt(&cf, Self::total_order_read_opts());
         iter.seek_to_first();
 
         let mut result = Vec::with_capacity(128); // Pre-allocate for "all" data
@@ -271,7 +321,7 @@ impl RocksDBEngine {
     }
 
     #[inline]
-    fn prefix_range_end(&self, prefix: &str) -> Vec<u8> {
+    pub fn prefix_range_end(&self, prefix: &str) -> Vec<u8> {
         let mut end = prefix.as_bytes().to_vec();
 
         for i in (0..end.len()).rev() {

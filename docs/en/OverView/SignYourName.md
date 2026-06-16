@@ -12,6 +12,7 @@ RobustMQ wants to invite you to sign your name for us — this signature will al
 @patwrall
 @flyswimmer
 @satori1995
+@skymacro
 @WaterWhisperer
 @NuclEnergy
 @hzbnb
@@ -29,6 +30,9 @@ RobustMQ wants to invite you to sign your name for us — this signature will al
 @jamesfeng2009
 @CsongSY
 @wanliofficial
+@JasonDing1024
+@alpha-99
+@chyu-wissfi
 
 ## How to Sign Your Name
 

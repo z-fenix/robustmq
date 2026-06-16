@@ -19,6 +19,8 @@ use crate::{
     filesegment::{
         segment_file::open_segment_write, segment_offset::SegmentOffset, SegmentIdentity,
     },
+    isr::apply::apply_leader_and_isr,
+    isr::fetcher_manager::ReplicaFetcherManager,
 };
 use common_config::{broker::broker_config, storage::StorageType};
 use metadata_struct::storage::segment::EngineSegment;
@@ -34,6 +36,7 @@ use tracing::warn;
 pub async fn update_storage_cache_metadata(
     cache_manager: &Arc<StorageCacheManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
+    fetcher_manager: &Arc<ReplicaFetcherManager>,
     record: &UpdateCacheRecord,
 ) -> Result<(), StorageEngineError> {
     match record.resource_type() {
@@ -51,6 +54,7 @@ pub async fn update_storage_cache_metadata(
             parse_segment(
                 cache_manager,
                 rocksdb_engine_handler,
+                fetcher_manager,
                 record.action_type(),
                 &record.data,
             )
@@ -90,6 +94,10 @@ async fn parse_shard(
                 commit_offset.save_earliest_offset(&shard.shard_name, 0)?;
                 commit_offset.save_latest_offset(&shard.shard_name, 0)?;
             }
+            cache_manager.save_offset_state(
+                shard.shard_name.clone(),
+                crate::commitlog::offset::ShardOffsetState::default(),
+            );
             cache_manager.set_shard(shard);
         }
         BrokerUpdateCacheActionType::Update => {}
@@ -108,6 +116,7 @@ async fn parse_shard(
 async fn parse_segment(
     cache_manager: &Arc<StorageCacheManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
+    fetcher_manager: &Arc<ReplicaFetcherManager>,
     action_type: BrokerUpdateCacheActionType,
     data: &[u8],
 ) -> Result<(), StorageEngineError> {
@@ -125,32 +134,72 @@ async fn parse_segment(
             };
 
             let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
-            cache_manager.set_segment(&segment);
+            if is_stale_segment_notification(cache_manager, &segment_iden, &segment) {
+                return Ok(());
+            }
 
+            cache_manager.add_segment_replica(&segment.shard_name, segment.segment_seq);
+
+            apply_leader_and_isr(
+                cache_manager,
+                rocksdb_engine_handler,
+                fetcher_manager,
+                &segment,
+            )
+            .await?;
+
+            cache_manager.set_segment(&segment);
             let conf = broker_config();
             if conf.broker_id == segment.leader {
                 cache_manager.add_leader_segment(&segment_iden);
+            } else {
+                // A leader switch is delivered as a Create notification too; a node
+                // that is no longer the leader must drop the segment from its
+                // leader_segments set, otherwise it keeps running ISR maintenance
+                // for a segment it no longer leads (stale ISR proposals / churn).
+                cache_manager.remove_leader_segment(&segment_iden);
             }
 
             if shard.config.storage_type == StorageType::EngineSegment {
                 let segment_file = open_segment_write(cache_manager, &segment_iden).await?;
                 segment_file.try_create().await?;
             }
+
             if shard.config.storage_type == StorageType::EngineMemory
-                && shard.config.storage_type == StorageType::EngineRocksDB
+                || shard.config.storage_type == StorageType::EngineRocksDB
             {
-                let commit_log_offset =
-                    CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
-                commit_log_offset.save_earliest_offset(&shard.shard_name, 0)?;
-                commit_log_offset.save_latest_offset(&shard.shard_name, 0)?;
+                // Only initialize offsets for a segment that is genuinely new on
+                // this node. A leader switch / ISR recovery / rebalance re-sends the
+                // segment to nodes that ALREADY hold its data as a "Create"; resetting
+                // offsets there would wipe the committed log's bookkeeping
+                // (latest_offset -> 0) and make the new leader truncate committed data.
+                // If offset state already exists, leave it untouched.
+                if cache_manager.get_offset_state(&shard.shard_name).is_none() {
+                    let commit_log_offset =
+                        CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
+                    commit_log_offset.save_earliest_offset(&shard.shard_name, 0)?;
+                    commit_log_offset.save_latest_offset(&shard.shard_name, 0)?;
+                }
             }
         }
 
         BrokerUpdateCacheActionType::Update => {
             let segment = EngineSegment::decode(data)?;
+            let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
+            if is_stale_segment_notification(cache_manager, &segment_iden, &segment) {
+                return Ok(());
+            }
+
+            apply_leader_and_isr(
+                cache_manager,
+                rocksdb_engine_handler,
+                fetcher_manager,
+                &segment,
+            )
+            .await?;
+
             cache_manager.set_segment(&segment);
             let conf = broker_config();
-            let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
             if conf.broker_id == segment.leader {
                 cache_manager.add_leader_segment(&segment_iden);
             } else {
@@ -164,6 +213,30 @@ async fn parse_segment(
         }
     }
     Ok(())
+}
+
+fn is_stale_segment_notification(
+    cache_manager: &Arc<StorageCacheManager>,
+    segment_iden: &SegmentIdentity,
+    incoming: &EngineSegment,
+) -> bool {
+    if let Some(local) = cache_manager.get_segment(segment_iden) {
+        let stale = local.segment_epoch > incoming.segment_epoch
+            || (local.segment_epoch == incoming.segment_epoch
+                && local.leader_epoch > incoming.leader_epoch);
+        if stale {
+            warn!(
+                "Dropping stale segment notification for {}: local (segment_epoch {}, leader_epoch {}) > incoming (segment_epoch {}, leader_epoch {})",
+                segment_iden.name(),
+                local.segment_epoch,
+                local.leader_epoch,
+                incoming.segment_epoch,
+                incoming.leader_epoch
+            );
+            return true;
+        }
+    }
+    false
 }
 
 async fn parse_segment_meta(
@@ -211,4 +284,79 @@ async fn parse_segment_meta(
         BrokerUpdateCacheActionType::Delete => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_stale_segment_notification;
+    use crate::core::cache::StorageCacheManager;
+    use crate::filesegment::SegmentIdentity;
+    use broker_core::cache::NodeCacheManager;
+    use common_config::config::BrokerConfig;
+    use metadata_struct::storage::segment::EngineSegment;
+    use std::sync::Arc;
+
+    fn segment(epoch: u32) -> EngineSegment {
+        EngineSegment {
+            shard_name: "s1".to_string(),
+            segment_seq: 0,
+            segment_epoch: epoch,
+            ..Default::default()
+        }
+    }
+
+    fn segment_le(segment_epoch: u32, leader_epoch: u32) -> EngineSegment {
+        EngineSegment {
+            shard_name: "s1".to_string(),
+            segment_seq: 0,
+            segment_epoch,
+            leader_epoch,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn segment_epoch_monotonic_filter() {
+        let cache = Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
+            BrokerConfig::default(),
+        ))));
+        let iden = SegmentIdentity::new("s1", 0);
+
+        assert!(!is_stale_segment_notification(&cache, &iden, &segment(0)));
+        cache.set_segment(&segment(2));
+
+        assert!(is_stale_segment_notification(&cache, &iden, &segment(1)));
+        assert!(!is_stale_segment_notification(&cache, &iden, &segment(2)));
+        assert!(!is_stale_segment_notification(&cache, &iden, &segment(3)));
+    }
+
+    #[test]
+    fn leader_epoch_filter_within_same_segment_epoch() {
+        let cache = Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
+            BrokerConfig::default(),
+        ))));
+        let iden = SegmentIdentity::new("s1", 0);
+        cache.set_segment(&segment_le(5, 10));
+
+        assert!(is_stale_segment_notification(
+            &cache,
+            &iden,
+            &segment_le(5, 9)
+        ));
+        assert!(!is_stale_segment_notification(
+            &cache,
+            &iden,
+            &segment_le(5, 10)
+        ));
+        assert!(!is_stale_segment_notification(
+            &cache,
+            &iden,
+            &segment_le(5, 11)
+        ));
+        assert!(!is_stale_segment_notification(
+            &cache,
+            &iden,
+            &segment_le(6, 9)
+        ));
+    }
 }

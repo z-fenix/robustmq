@@ -53,6 +53,8 @@ pub enum TaskKind {
     StorageEngineSegmentExpire,
     StorageEngineRocksDBExpire,
     StorageEngineConnGC,
+    StorageEngineIsrMaintain,
+    StorageEngineMetadataReconcile,
     NATSClientKeepAlive,
     NATSSubscribeParse,
     NATSSubscribePush,
@@ -99,6 +101,10 @@ impl std::fmt::Display for TaskKind {
             TaskKind::StorageEngineSegmentExpire => write!(f, "StorageEngineSegmentExpire"),
             TaskKind::StorageEngineRocksDBExpire => write!(f, "StorageEngineRocksDBExpire"),
             TaskKind::StorageEngineConnGC => write!(f, "StorageEngineConnGC"),
+            TaskKind::StorageEngineIsrMaintain => write!(f, "StorageEngineIsrMaintain"),
+            TaskKind::StorageEngineMetadataReconcile => {
+                write!(f, "StorageEngineMetadataReconcile")
+            }
             TaskKind::NATSClientKeepAlive => write!(f, "NATSClientKeepAlive"),
             TaskKind::NATSSubscribeParse => write!(f, "NATSSubscribeParse"),
             TaskKind::NATSSubscribePush => write!(f, "NATSSubscribePush"),
@@ -163,6 +169,13 @@ impl TaskSupervisor {
             return *state == TaskState::Running;
         }
         false
+    }
+
+    /// Whether any supervised task is still in the `Running` state.
+    pub fn has_running(&self) -> bool {
+        self.task_status
+            .iter()
+            .any(|entry| *entry.value() == TaskState::Running)
     }
 
     async fn set_state(&self, kind: String, state: TaskState) {

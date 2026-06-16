@@ -97,10 +97,11 @@ impl DataRoute {
                 Ok(None)
             }
             StorageDataType::ClusterAddNode => {
-                self.route_cluster
+                let broker_epoch = self
+                    .route_cluster
                     .add_node(storage_data.value.clone())
                     .await?;
-                Ok(None)
+                Ok(Some(Bytes::copy_from_slice(&broker_epoch.to_le_bytes())))
             }
             StorageDataType::ClusterDeleteNode => {
                 self.route_cluster
@@ -188,6 +189,11 @@ impl DataRoute {
                 Ok(None)
             }
 
+            StorageDataType::StorageEngineUpdateSegmentIsr => Ok(Some(
+                self.route_journal
+                    .update_segment_isr(storage_data.value.clone())
+                    .await?,
+            )),
             StorageDataType::StorageEngineSetSegmentMetadata => Ok(Some(
                 self.route_journal
                     .set_segment_meta(storage_data.value.clone())

@@ -30,14 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
-use tracing::{error, info};
-
-#[derive(Clone, Debug, Default)]
-pub struct ShardOffsetState {
-    pub earliest_offset: u64,
-    pub high_watermark_offset: u64,
-    pub latest_offset: u64,
-}
+use tracing::{debug, error, info};
 
 pub fn delete_local_shard(
     cache_manager: Arc<StorageCacheManager>,
@@ -93,6 +86,31 @@ pub fn shard_already_delete(shard_name: &str) -> Result<bool, StorageEngineError
     Ok(true)
 }
 
+/// Whether the shard is provisioned in this broker's local cache: the shard and
+/// its segment-0 are present and (for segment storage) segment-0 metadata exists.
+///
+/// This intentionally does NOT require the local broker to be segment-0's leader.
+/// Leader/replica placement is load-balanced across the cluster, so the broker
+/// that requests shard creation is frequently neither the leader nor a replica;
+/// requiring local leadership here would make it wait forever. Shard, segment and
+/// segment metadata are all broadcast to every node via cache notifications, so
+/// any node can confirm provisioning from its local cache.
+fn shard_provisioned(cache_manager: &Arc<StorageCacheManager>, shard: &AdapterShardInfo) -> bool {
+    let shard_name = &shard.shard_name;
+    if !cache_manager.shards.contains_key(shard_name) {
+        return false;
+    }
+    let segment_iden = SegmentIdentity::new(shard_name, 0);
+    if cache_manager.get_segment(&segment_iden).is_none() {
+        return false;
+    }
+    match shard.config.storage_type {
+        StorageType::EngineSegment => cache_manager.get_segment_meta(&segment_iden).is_some(),
+        StorageType::EngineMemory | StorageType::EngineRocksDB => true,
+        _ => false,
+    }
+}
+
 pub async fn create_shard_to_place(
     cache_manager: &Arc<StorageCacheManager>,
     client_pool: &Arc<ClientPool>,
@@ -101,6 +119,16 @@ pub async fn create_shard_to_place(
     is_support_storage_type(shard.config.storage_type)?;
 
     let shard_name = &shard.shard_name;
+
+    // Idempotent ensure: already provisioned in local cache, nothing to do.
+    if shard_provisioned(cache_manager, shard) {
+        debug!(
+            "Shard {} already provisioned, skipping creation",
+            shard_name
+        );
+        return Ok(());
+    }
+
     let conf: &common_config::config::BrokerConfig = broker_config();
     let request = CreateShardRequest {
         shard_name: shard_name.to_string(),
@@ -115,26 +143,13 @@ pub async fn create_shard_to_place(
     )
     .await?;
 
-    // Wait for shard to be created in local cache with timeout
-    let wait_result = timeout(Duration::from_secs(3), async {
+    // Wait for the shard to be ready: shard and segment-0 populated in local cache.
+    const SHARD_READY_TIMEOUT_SECS: u64 = 10;
+    let wait_result = timeout(Duration::from_secs(SHARD_READY_TIMEOUT_SECS), async {
         loop {
-            let segment_iden = SegmentIdentity::new(shard_name, 0);
-            if shard.config.storage_type == StorageType::EngineSegment
-                && cache_manager.shards.contains_key(shard_name)
-                && cache_manager.get_segment(&segment_iden).is_some()
-                && cache_manager.get_segment_meta(&segment_iden).is_some()
-            {
+            if shard_provisioned(cache_manager, shard) {
                 return;
             }
-
-            if (shard.config.storage_type == StorageType::EngineMemory
-                || shard.config.storage_type == StorageType::EngineRocksDB)
-                && cache_manager.shards.contains_key(shard_name)
-                && cache_manager.get_segment(&segment_iden).is_some()
-            {
-                return;
-            }
-
             sleep(Duration::from_millis(100)).await;
         }
     })
@@ -149,8 +164,8 @@ pub async fn create_shard_to_place(
             Ok(())
         }
         Err(_) => Err(StorageEngineError::CommonErrorStr(format!(
-            "Timeout waiting for shard '{}' to be created in local cache after 3 seconds",
-            shard_name
+            "Timeout waiting for shard '{}' (topic '{}') to be created in local cache after {}s",
+            shard_name, shard.topic_name, SHARD_READY_TIMEOUT_SECS
         ))),
     }
 }

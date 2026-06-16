@@ -19,7 +19,6 @@ use common_config::storage::StorageType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-
 pub struct EngineShard {
     pub shard_uid: String,
     pub shard_name: String,
@@ -77,6 +76,18 @@ pub struct EngineShardConfig {
     pub max_segment_size: Option<u64>,
     pub max_record_num: Option<u64>,
     pub retention_sec: u64,
+
+    // Per-shard ISR durability knob (Kafka-style min.insync.replicas). All other
+    // ISR tuning (fetch sizing, lag window, reconcile intervals, unclean election)
+    // is cluster-wide and lives in the broker `StorageRuntime` config.
+    #[serde(default = "default_min_in_sync_replicas")]
+    pub min_in_sync_replicas: u32,
+
+    // Inner/system topic (derived from `Topic.source == SystemInner` at creation).
+    // Inner topics may be created with fewer replicas than `replica_num` when the
+    // cluster is small; the remainder is filled in later by a background task.
+    #[serde(default)]
+    pub is_inner_topic: bool,
 }
 
 /// 1 GiB (1024 * 1024 * 1024 bytes)
@@ -84,6 +95,12 @@ pub const DEFAULT_MAX_SEGMENT_SIZE: u64 = 1073741824;
 
 /// 24 hours in seconds
 pub const DEFAULT_RETENTION_SEC: u64 = 7 * 86400;
+
+pub const DEFAULT_MIN_IN_SYNC_REPLICAS: u32 = 1;
+
+fn default_min_in_sync_replicas() -> u32 {
+    DEFAULT_MIN_IN_SYNC_REPLICAS
+}
 
 impl Default for EngineShardConfig {
     fn default() -> Self {
@@ -93,6 +110,8 @@ impl Default for EngineShardConfig {
             retention_sec: DEFAULT_RETENTION_SEC,
             max_record_num: None,
             storage_type: StorageType::EngineMemory,
+            min_in_sync_replicas: DEFAULT_MIN_IN_SYNC_REPLICAS,
+            is_inner_topic: false,
         }
     }
 }
@@ -104,5 +123,31 @@ impl EngineShardConfig {
 
     pub fn decode(data: &[u8]) -> Result<Self, CommonError> {
         serialize::deserialize(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let c = EngineShardConfig::default();
+        assert_eq!(c.min_in_sync_replicas, DEFAULT_MIN_IN_SYNC_REPLICAS);
+        assert_eq!(c.replica_num, 1);
+        assert_eq!(c.retention_sec, DEFAULT_RETENTION_SEC);
+        assert_eq!(c.max_segment_size, Some(DEFAULT_MAX_SEGMENT_SIZE));
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let c = EngineShardConfig {
+            replica_num: 3,
+            min_in_sync_replicas: 2,
+            ..Default::default()
+        };
+        let decoded = EngineShardConfig::decode(&c.encode().unwrap()).unwrap();
+        assert_eq!(decoded.replica_num, 3);
+        assert_eq!(decoded.min_in_sync_replicas, 2);
     }
 }

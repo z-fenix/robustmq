@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::codegen::tokio_stream::Stream;
 use tonic::Status;
-use tracing::info;
+use tracing::{debug, info};
 
 type ListShardStream =
     Result<Pin<Box<dyn Stream<Item = Result<ListShardReply, Status>> + Send>>, MetaServiceError>;
@@ -68,17 +68,27 @@ pub async fn create_shard_by_req(
     raft_manager: &Arc<MultiRaftManager>,
     call_manager: &Arc<NodeCallManager>,
     client_pool: &Arc<ClientPool>,
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     req: &CreateShardRequest,
 ) -> Result<CreateShardReply, MetaServiceError> {
-    let num = cache_manager.node_list.len() as u32;
     let shard_config: EngineShardConfig = EngineShardConfig::decode(&req.shard_config)?;
-    if num < shard_config.replica_num {
-        return Err(MetaServiceError::NotEnoughEngineNodes(
-            "CreateShard".to_string(),
-            shard_config.replica_num,
-            num,
-        ));
+
+    // Regular topics need enough engine nodes for the full replica set before we
+    // create the shard — otherwise create_segment fails afterwards and leaves an
+    // orphan shard. Inner/system topics are exempt: they may start
+    // under-replicated and are topped up by the background fill task.
+    if !shard_config.is_inner_topic {
+        let engine_node_num = cache_manager.get_engine_node_list().len() as u32;
+        if engine_node_num < shard_config.replica_num {
+            return Err(MetaServiceError::NotEnoughEngineNodes(
+                "CreateShard".to_string(),
+                shard_config.replica_num,
+                engine_node_num,
+            ));
+        }
     }
+
+    let already_exists = cache_manager.shard_list.contains_key(&req.shard_name);
 
     let shard: EngineShard = create_shard(
         cache_manager,
@@ -96,6 +106,7 @@ pub async fn create_shard_by_req(
         raft_manager,
         call_manager,
         client_pool,
+        rocksdb_engine_handler,
         &shard,
         0,
         0,
@@ -104,10 +115,17 @@ pub async fn create_shard_by_req(
 
     let replica = segment.replicas.iter().map(|rep| rep.node_id).collect();
 
-    info!(
-        "Created shard '{}' with initial segment {}",
-        req.shard_name, segment.segment_seq
-    );
+    if already_exists {
+        debug!(
+            "Shard '{}' already exists with segment {}, skipped creation",
+            req.shard_name, segment.segment_seq
+        );
+    } else {
+        info!(
+            "Created shard '{}' with initial segment {}",
+            req.shard_name, segment.segment_seq
+        );
+    }
 
     Ok(CreateShardReply {
         segment_no: segment.segment_seq,

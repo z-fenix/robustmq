@@ -16,6 +16,7 @@ use crate::raft::manager::RaftStateMachineName;
 use crate::raft::route::AppResponseData;
 use crate::raft::route::DataRoute;
 use crate::raft::snapshot::build::build_snapshot;
+use crate::raft::snapshot::create_receiving_snapshot_file;
 use crate::raft::snapshot::recover::{get_current_snapshot, recover_snapshot};
 use crate::raft::store::keys::{key_last_applied, key_last_membership};
 use crate::raft::type_config::Entry;
@@ -161,6 +162,7 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
 
         build_snapshot(
             &machine_name,
+            &self.machine,
             &self.db,
             &self.data.last_applied_log_id,
             &self.data.last_membership,
@@ -235,15 +237,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        let data = get_current_snapshot(&self.machine)
+        // Receiver side: return a fresh empty file for openraft to stream into.
+        // Must NOT read the local snapshot (a new node has none).
+        let file = create_receiving_snapshot_file(&self.machine)
             .await
             .map_err(|e| sto_read(&e))?;
-        match data {
-            Some(da) => Ok(da.snapshot),
-            None => Err(sto_read(&CommonError::CommonError(
-                "No current snapshot available".to_string(),
-            ))),
-        }
+        Ok(Box::new(file))
     }
 
     async fn install_snapshot(
@@ -267,27 +266,38 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         )
         .await?;
 
+        // After importing the snapshot data, the state machine now reflects the
+        // snapshot's coverage. Persist last_applied / last_membership so that on
+        // the next restart `applied_state()` matches the installed snapshot and
+        // openraft's `last_applied <= snapshot_last_log_id` invariant holds.
+        self.data.last_applied_log_id = meta.last_log_id;
+        self.data.last_membership = meta.last_membership.clone();
+        self.set_last_applied_(meta.last_log_id)?;
+        self.set_last_membership_(&self.data.last_membership)?;
+
         Ok(())
     }
 
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
-        let data = get_current_snapshot(&self.machine)
+        // Return the stored snapshot as-is (used to bring lagging followers up to
+        // date). Must NOT be dropped by comparing with last_applied.
+        //
+        // Use the parsed group name (e.g. "data"), matching how build_snapshot /
+        // install_snapshot store it — self.machine is the shard name ("data_0"),
+        // and using it directly would look up a non-existent "data_0.*" snapshot
+        // id and wrongly return None (which crashes RaftCore with
+        // "Read Snapshot(None): snapshot not found").
+        let machine_name = self.machine.parse::<RaftStateMachineName>().map_err(|e| {
+            sto_read(&CommonError::CommonError(format!(
+                "Invalid machine name {}: {}",
+                self.machine, e
+            )))
+        })?;
+        get_current_snapshot(machine_name.as_str())
             .await
-            .map_err(|e| sto_read(&e))?;
-
-        if let Some(snapshot) = data {
-            if let Some(id) = self.data.last_applied_log_id {
-                if let Some(snapshot_id) = snapshot.meta.last_log_id {
-                    if snapshot_id >= id {
-                        return Ok(Some(snapshot));
-                    }
-                }
-            }
-        }
-
-        Ok(None)
+            .map_err(|e| sto_read(&e))
     }
 }
 

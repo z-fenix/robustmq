@@ -21,12 +21,12 @@ use crate::raft::route::data::StorageData;
 use crate::raft::route::DataRoute;
 use common_base::error::common::CommonError;
 use common_config::broker::broker_config;
-use common_metrics::meta::raft::{init_raft_shards, record_raft_apply_lag};
-use grpc_clients::meta::common::call::{join_cluster, leave_cluster};
+use common_metrics::meta::raft::{init_raft_shards_metrics, record_raft_apply_lag};
+use grpc_clients::meta::common::call::join_cluster;
 use grpc_clients::pool::ClientPool;
 use openraft::raft::ClientWriteResponse;
-use openraft::{Config, Raft};
-use protocol::meta::meta_service_common::{JoinClusterRequest, LeaveClusterRequest};
+use openraft::{Config, Raft, SnapshotPolicy};
+use protocol::meta::meta_service_common::JoinClusterRequest;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -102,7 +102,7 @@ impl MultiRaftManager {
             "Initializing Multi-Raft: metadata=1, offset={}, data={}",
             meta_rt.offset_raft_group_num, meta_rt.data_raft_group_num
         );
-        init_raft_shards(meta_rt.offset_raft_group_num, meta_rt.data_raft_group_num);
+        init_raft_shards_metrics(meta_rt.offset_raft_group_num, meta_rt.data_raft_group_num);
 
         let metadata = RaftGroup::new(
             "metadata",
@@ -143,10 +143,6 @@ impl MultiRaftManager {
     pub async fn start(&self) -> Result<(), CommonError> {
         info!("Starting Multi-Raft");
 
-        // Each shard bootstrap themselves as single-node if no peer is reachable,
-        // or waits to receive log replication from the Leader.
-        // The join request (add_learner + change_membership) is sent once here,
-        // not per-shard, to avoid duplicate joins.
         let conf = broker_config();
         let self_id: u64 = conf.broker_id;
         let self_addr = conf
@@ -154,10 +150,7 @@ impl MultiRaftManager {
             .get(&self_id.to_string())
             .map(|a| a.to_string().replace('"', ""))
             .ok_or_else(|| {
-                CommonError::CommonError(format!(
-                    "broker_id {} not found in meta_addrs — cannot determine own Raft address",
-                    self_id
-                ))
+                CommonError::CommonError(format!("broker_id {} not found in meta_addrs", self_id))
             })?;
 
         let peers: Vec<(u64, String)> = conf
@@ -172,29 +165,30 @@ impl MultiRaftManager {
             })
             .collect();
 
-        // Disable election on all shards before starting — prevents a restarting node
-        // with stale high-term vote from disrupting the cluster.
-        // Election is re-enabled after join/bootstrap completes.
-        for (_, raft) in self.all_shards() {
-            raft.runtime_config().elect(false);
-        }
-
-        // Start all shard raft nodes (logs initialization status, does not initialize).
         self.metadata.start_nodes().await?;
         self.offset.start_nodes().await?;
         self.data.start_nodes().await?;
 
-        let reachable_peer = Self::find_reachable_peer(&peers).await;
+        // A node with persisted state just restarts — openraft re-establishes
+        // replication on its own, no add_learner/change_membership needed.
+        let initialized = match self.all_shards().next() {
+            Some((_, raft)) => raft.is_initialized().await.unwrap_or(false),
+            None => false,
+        };
 
-        match reachable_peer {
+        if initialized {
+            info!(
+                "Node {} has persisted state, recovering existing cluster",
+                self_id
+            );
+            info!("Multi-Raft started");
+            return Ok(());
+        }
+
+        match Self::find_reachable_peer(&peers).await {
+            // Fresh node, a peer is reachable: join the existing cluster.
             Some((peer_id, ref peer_addr)) => {
-                // Always join when a peer is reachable:
-                // - First boot: join the existing cluster
-                // - Restart: re-join to reset log/vote state (add_learner is idempotent)
-                info!(
-                    "Reachable peer found: node {} at {}. Sending join request.",
-                    peer_id, peer_addr
-                );
+                info!("Joining cluster via peer {} at {}", peer_id, peer_addr);
                 let req = JoinClusterRequest {
                     node_id: self_id,
                     rpc_addr: self_addr.clone(),
@@ -213,10 +207,10 @@ impl MultiRaftManager {
                 })?;
                 info!("Successfully joined cluster via peer {}", peer_addr);
             }
+            // Fresh node, no peer reachable: first node, bootstrap single-node.
             None => {
-                // No reachable peers — bootstrap as single-node, or already sole node on restart.
                 info!(
-                    "No reachable peers, bootstrapping as single-node cluster (node {})",
+                    "No reachable peers, bootstrapping single-node cluster (node {})",
                     self_id
                 );
                 self.metadata
@@ -227,11 +221,6 @@ impl MultiRaftManager {
                     .await?;
                 self.data.bootstrap_single_node(self_id, &self_addr).await?;
             }
-        }
-
-        // Re-enable election now that the node has a consistent state.
-        for (_, raft) in self.all_shards() {
-            raft.runtime_config().elect(true);
         }
 
         info!("Multi-Raft started");
@@ -342,57 +331,6 @@ impl MultiRaftManager {
         }
     }
 
-    /// Remove self from the Raft cluster by sending a LeaveCluster request to the Leader.
-    /// The Leader executes change_membership to remove this node from all shards.
-    pub async fn leave_cluster(&self) -> Result<(), CommonError> {
-        let conf = broker_config();
-        let self_id = conf.broker_id;
-
-        // Find the current Leader address from any shard's metrics.
-        let leader_addr = self.all_shards().find_map(|(_, raft)| {
-            let m = raft.metrics().borrow().clone();
-            let leader_id = m.current_leader?;
-            let nodes: Vec<(u64, String)> = m
-                .membership_config
-                .membership()
-                .nodes()
-                .map(|(id, node)| (*id, node.rpc_addr.clone()))
-                .collect();
-            nodes
-                .into_iter()
-                .find(|(id, _)| *id == leader_id)
-                .map(|(_, addr)| addr)
-        });
-
-        let leader_addr = match leader_addr {
-            Some(addr) => addr,
-            None => {
-                warn!("No leader found, cannot send leave request gracefully");
-                return Ok(());
-            }
-        };
-
-        info!(
-            "Sending leave request for node {} to Leader at {}",
-            self_id, leader_addr
-        );
-
-        let req = LeaveClusterRequest { node_id: self_id };
-        if let Err(e) = leave_cluster(
-            &ClientPool::new(conf.runtime.channels_per_address),
-            &[leader_addr.as_str()],
-            req,
-        )
-        .await
-        {
-            warn!("Failed to leave cluster gracefully: {}", e);
-        } else {
-            info!("Node {} successfully left the cluster", self_id);
-        }
-
-        Ok(())
-    }
-
     pub async fn shutdown(&self) -> Result<(), CommonError> {
         let mut stop = self.stop.write().await;
         *stop = true;
@@ -449,6 +387,14 @@ impl MultiRaftManager {
             heartbeat_interval: 500,
             election_timeout_min: 1500,
             election_timeout_max: 3000,
+            // Build a snapshot every 100 applied logs and keep a small log tail
+            // afterwards. Without an active snapshot policy, openraft purges logs
+            // while the persisted snapshot lags behind last_applied, so on restart
+            // purge_upto ends up greater than snapshot_last_log_id and RaftCore
+            // panics ("invalid state"). A modest threshold keeps snapshot and
+            // applied state in sync across restarts.
+            snapshot_policy: SnapshotPolicy::LogsSinceLast(100),
+            max_in_snapshot_log_to_keep: 1000,
             ..Default::default()
         };
 

@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::commitlog::offset::ShardOffsetState;
 use crate::core::offset_index::SegmentOffsetIndex;
-use crate::core::shard::ShardOffsetState;
 use crate::filesegment::segment_file::SegmentFile;
 use crate::filesegment::SegmentIdentity;
+use crate::isr::follower::SegmentReplicaState;
 use broker_core::cache::NodeCacheManager;
 use common_base::tools::now_second;
 use dashmap::DashMap;
@@ -23,6 +24,7 @@ use metadata_struct::storage::segment::EngineSegment;
 use metadata_struct::storage::segment_meta::EngineSegmentMetadata;
 use metadata_struct::storage::shard::EngineShard;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct StorageCacheManager {
@@ -52,6 +54,16 @@ pub struct StorageCacheManager {
 
     // (shard_name, ShardOffsetState)
     pub shard_offset_state: DashMap<String, ShardOffsetState>,
+
+    // ISR segment-level replica state ((shard, segment_seq) -> role/epoch/follower_progress)
+    pub segment_replica_states: DashMap<(String, u32), Arc<SegmentReplicaState>>,
+
+    // ISR per-shard HW watcher (wakes acks=all waiters; wired in T11)
+    pub hw_watchers: DashMap<String, watch::Sender<u64>>,
+
+    // Segments that need an immediate reconcile (set by fetch handler on UnknownLeaderEpoch).
+    // Value is the timestamp (seconds) of the last trigger, used for rate-limiting.
+    pub reconcile_needed: DashMap<(String, u32), u64>,
 }
 
 impl StorageCacheManager {
@@ -74,7 +86,53 @@ impl StorageCacheManager {
             segment_file_writer,
             is_next_segment,
             shard_offset_state,
+            segment_replica_states: DashMap::with_capacity(8),
+            hw_watchers: DashMap::with_capacity(8),
+            reconcile_needed: DashMap::with_capacity(8),
         }
+    }
+
+    pub fn mark_reconcile_needed(&self, shard: &str, segment_seq: u32, min_interval_sec: u64) {
+        let now = now_second();
+        let key = (shard.to_string(), segment_seq);
+        let mut entry = self.reconcile_needed.entry(key).or_insert(0);
+        if now.saturating_sub(*entry) >= min_interval_sec {
+            *entry = now;
+        }
+    }
+
+    pub fn take_reconcile_needed(&self) -> Vec<(String, u32)> {
+        let keys: Vec<_> = self
+            .reconcile_needed
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for k in &keys {
+            self.reconcile_needed.remove(k);
+        }
+        keys
+    }
+
+    // ISR segment replica state
+    pub fn add_segment_replica(&self, shard: &str, segment_seq: u32) {
+        self.segment_replica_states
+            .entry((shard.to_string(), segment_seq))
+            .or_insert_with(|| Arc::new(DashMap::new()));
+    }
+
+    pub fn get_segment_replica(
+        &self,
+        shard: &str,
+        segment_seq: u32,
+    ) -> Option<Arc<SegmentReplicaState>> {
+        self.segment_replica_states
+            .get(&(shard.to_string(), segment_seq))
+            .map(|s| s.clone())
+    }
+
+    pub fn remove_segment_replica(&self, shard: &str, segment_seq: u32) {
+        self.segment_replica_states
+            .remove(&(shard.to_string(), segment_seq));
     }
 
     // Shard
@@ -282,5 +340,22 @@ impl StorageCacheManager {
         if let Some(mut state) = self.shard_offset_state.get_mut(shard_name) {
             state.earliest_offset = offset;
         }
+    }
+
+    pub fn update_high_watermark_offset(&self, shard_name: &str, offset: u64) -> bool {
+        if let Some(mut state) = self.shard_offset_state.get_mut(shard_name) {
+            if offset > state.high_watermark_offset {
+                state.high_watermark_offset = offset;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn hw_watcher(&self, shard_name: &str) -> watch::Sender<u64> {
+        self.hw_watchers
+            .entry(shard_name.to_string())
+            .or_insert_with(|| watch::channel(0).0)
+            .clone()
     }
 }

@@ -32,6 +32,9 @@ pub const CLUSTER_INFO: &str = "/info";
 pub const CLUSTER_CONFIG_SET_PATH: &str = "/cluster/config/set";
 pub const CLUSTER_CONFIG_GET_PATH: &str = "/cluster/config/get";
 
+// Cluster Node management
+pub const CLUSTER_NODE_LEAVE_PATH: &str = "/cluster/node/leave";
+
 // Cluster Topic API paths
 pub const CLUSTER_TOPIC_LIST_PATH: &str = "/cluster/topic/list";
 pub const CLUSTER_TOPIC_DETAIL_PATH: &str = "/cluster/topic/detail";
@@ -113,6 +116,9 @@ pub const STORAGE_ENGINE_SHARD_LIST_PATH: &str = "/storage-engine/shard/list";
 pub const STORAGE_ENGINE_SHARD_CREATE_PATH: &str = "/storage-engine/shard/create";
 pub const STORAGE_ENGINE_SHARD_DELETE_PATH: &str = "/storage-engine/shard/delete";
 pub const STORAGE_ENGINE_SEGMENT_LIST_PATH: &str = "/storage-engine/segment/list";
+pub const STORAGE_ENGINE_SEGMENT_DETAIL_PATH: &str = "/storage-engine/segment/detail";
+// Internal: called by segment_detail to collect local replica state from each broker node
+pub const STORAGE_ENGINE_SEGMENT_REPLICA_STATE_PATH: &str = "/storage-engine/segment/replica-state";
 
 // Cluster Offset API paths
 pub const CLUSTER_OFFSET_BY_TIMESTAMP_PATH: &str = "/cluster/offset/timestamp";

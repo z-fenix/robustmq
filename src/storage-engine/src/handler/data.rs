@@ -43,6 +43,7 @@ fn params_validator(
 }
 
 /// the entry point for handling write requests
+#[allow(clippy::too_many_arguments)]
 pub async fn write_data_req(
     cache_manager: &Arc<StorageCacheManager>,
     write_manager: &Arc<WriteManager>,
@@ -51,6 +52,8 @@ pub async fn write_data_req(
     client_connection_manager: &Arc<ClientConnectionManager>,
     shard_name: &str,
     messages: &[Vec<u8>],
+    acks: i8,
+    timeout_ms: u64,
 ) -> Result<Vec<WriteRespMessage>, StorageEngineError> {
     if messages.is_empty() {
         return Ok(Vec::new());
@@ -73,6 +76,8 @@ pub async fn write_data_req(
         client_connection_manager,
         shard_name,
         &record_list,
+        acks,
+        timeout_ms,
     )
     .await?;
 
@@ -249,6 +254,10 @@ mod tests {
         commit_offset
             .save_latest_offset(&segment_iden.shard_name, 0)
             .unwrap();
+        cache_manager.save_offset_state(
+            segment_iden.shard_name.clone(),
+            crate::commitlog::offset::ShardOffsetState::default(),
+        );
 
         let shard_info = cache_manager.shards.get(&segment_iden.shard_name).unwrap();
         assert_eq!(shard_info.config.storage_type, engine_storage_type);
@@ -296,6 +305,8 @@ mod tests {
             &client_connection_manager,
             &segment_iden.shard_name,
             &messages,
+            1,
+            0,
         )
         .await
         .unwrap();

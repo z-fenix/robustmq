@@ -10,6 +10,40 @@
 >
 > ⚠️ Task 编号(T1, T2, ...)是依赖关系排序,不是版本号。多个 task 可并行做。
 
+## 实现进度快照(当前分支)
+
+> 按实际代码盘点。已实现部分与原设计的偏差见各 task 的"实现偏差"小节,关键全局偏差汇总在本节末。
+
+| Task | 状态 | 说明 |
+|---|---|---|
+| T1 元数据 + broker_epoch | ✅ 完成 | broker_epoch 复用 `ClusterAddNode` op 经响应值返回(非新 `NodeRegistryUpdate` op);存 rocksdb key `clusters/node_epoch/{node_id}` |
+| T2 UpdateSegmentIsr + 五重 fence | ✅ 完成 | apply **永不返业务 Err**,结果编码进 `IsrUpdateOutcome` 响应值;fence 拆 server 预检(leader 身份/ISR 合法性)+ raft apply 原子(leader_epoch/broker_epoch/segment_epoch CAS) |
+| T0 启动恢复 | ✅ 完成 | `recover_local_segments`：启动时遍历本地 memory/rocksdb segment，持 state_lock 恢复 LeaderEpochCache(截断超过 leo 的虚假 epoch)+ 钳 HW。role 入口由 T13a 的 meta 推 + reconcile 补。通知缓存队列/register 重试仍缺 |
+| T3 SegmentLeaderAndIsr 广播 | ✅ 完成 | meta 广播(复用 `send_notify_by_set_segment`)+ broker 端 segment_epoch **及 leader_epoch** 过滤;broker 端 role 状态机已接(T13a `apply_leader_and_isr` 挂在 `parse_segment`) |
+| T4 ReplicaLog trait | ✅ 完成 | 持久化契约改为副本冗余 + 后台刷盘(**无 per-write fsync**) |
+| T5 memory ReplicaLog | ✅ 完成 | 复用 `ShardState.data`,不另开存储 |
+| T6 rocksdb ReplicaLog | ✅ 完成 | record key 统一 `record/{shard}/{seg:010}/{offset:020}`;LEO key 兄弟前缀 `record-leo/...`;无 `set_sync` |
+| T7 LeaderEpochCache | ✅ 完成 | **无 `fsync()` 方法**;`end_offset_for -> Option<u64>`(None=latest 由调用方补 LEO) |
+| T8a fetch RPC 库逻辑 + 五重 fence | ✅ 完成 | **批量跨 shard**(`Vec<FetchShardReq>`,per-shard error_code);apply 永不返业务 Err;long-poll 暂为 sleep+重收(append 唤醒留 T11) |
+| T8b fetch handler 接 router | ✅ 完成 | `handle_fetch` 挂 storage RPC dispatch(`ApiKey::Fetch`),leader 端应答远程 fetch;`command.rs` 组 `FetchEngines` 调用 |
+| T9 follower fetcher 库逻辑 | ✅ 完成 | **固定线程池** `ReplicaFetcherThread`(配置 `num_replica_fetchers`,`leader_node % N` 路由,每线程多 segment 按 leader 批量),非 per-segment 任务;`add/remove_segment`、`run` select-loop;broker_epoch/fetch 参数运行时从 broker cache 动态读 |
+| T13b′ Fetcher Manager 装配 | ✅ 完成 | `ReplicaFetcherManager`:固定 N 线程,**每线程独立 stop + JoinHandle**(`stop_thread`/`restart_thread`)+ `assign/remove_segment` 路由 + 真实 packet `FetchTransport`(复用 `read_send`);`EngineReplicaLog` 按 shard `storage_type` 动态路由 memory/rocksdb;manager 存装箱 `Arc<dyn FetchTransport/ReplicaLog>`,engine.rs `new` 进 params、lib.rs `start()` spawn |
+| T10 OffsetsForLeaderEpoch + truncation | ✅ 完成 | `OffsetsForLeaderEpoch` RPC(`ApiKey` + codec)+ leader handler + follower `truncate_after_fence`(Fenced/OutOfOrder → 查 end_offset → truncate_to + truncate_from_end_by_epoch);resp 携带 `current_leader_epoch`，截断后更新 fetcher state 防死循环。**集成测试未做** |
+| T11+T13a 写入闭环 + role 状态机 | ✅ 完成 | HW 推进(`advance_hw`=min(leader LEO, 已知 ISR follower LEO)，无 progress 记录的成员跳过)+ acks(0/1/all)+ role 状态机(`apply_leader_and_isr`：stale 检查扩展为 leader_epoch+segment_epoch 字典序；只在 leader_epoch 真正变化时 reset_follower_progress；失败回滚 role)+ fetcher 随 role 自动 assign/remove。manager 经调用链传参(cache 不存 manager)。**LeaderDemoting 主动唤醒 acks=all 等待者未实现（当前靠超时）** |
+| T13c follower truncation 闭环 | ✅ 完成 | fetcher 收到 `FencedLeaderEpoch` 或 `append_at` 返 `OutOfOrder`→ `truncate_after_fence`:发 OffsetsForLeaderEpoch → `truncate_to(end_offset-1)` + `truncate_from_end_by_epoch` + 更新 `current_leader_epoch`;`end_offset_epoch<0` 全量 clear |
+| T12 ISR shrink/expand | ✅ 完成 | `isr_maintain.rs` 周期 5s 遍历本节点 LeaderActive segment → `compute_new_isr`(按时间 lag 判定) → `update_segment_isr` grpc 提议。配置 `replica_lag_time_max_ms` (默认 10s) |
+| T16 reconcile 兜底 | ✅ 完成 | meta 只读 `ReconcileSegmentMetadata` grpc + `reconcile.rs` 周期 30s 遍历所有 segment 比对 segment_epoch → 拉到更新 → apply_leader_and_isr(幂等) |
+| T17 空 ISR 恢复 | ✅ 完成 | `elect_recovery_leader`+`on_node_online` 协调器(节点 register 触发；心跳超时→remove_node→leader_switch 标 Unavailable，节点重启重新 register 触发 on_node_online)；per-segment async mutex 防并发双选举；`QueryReplicaLeo` grpc 反向调用查 LEO；SetSegment 恢复 Write。集成测试未做 |
+
+**已实现部分的全局偏差**(三文档凡描述这些处均按此为准):
+1. **无 per-write fsync**:append/truncate/clear、LeaderEpochCache.assign 都不 fsync;持久性靠副本冗余 + 引擎后台刷盘。`LeaderEpochCache` 无 `fsync()` 方法。
+2. **命名**:gRPC/raft op 是 `UpdateSegmentIsr`(`StorageDataType::StorageEngineUpdateSegmentIsr`),**不是**原设计的 `AlterPartition` / `EngineDataType`。
+3. **broker_epoch**:`NodeStorage::{next,get}_broker_epoch`(rocksdb key),**无** 内存 `NodeRegistry` HashMap / `NodeRegistryUpdate` op。
+4. **fetch 批量 + 线程池**:`FetchReqBody{...,shards:Vec<FetchShardReq>}` / `FetchRespBody{shards}`,per-shard error_code;fetcher 是固定 `ReplicaFetcherThread` 池。
+5. **isr/ 实际模块**:`fetch.rs, fetcher.rs, fetcher_manager.rs, hw.rs, isr_maintain.rs, isr_recovery.rs, leader_epoch.rs, log.rs, offsets_for_leader_epoch.rs, reconcile.rs, role.rs, startup.rs, state.rs`(全部已存在)。
+6. **state.rs 结构**:`SegmentReplicaState` 用 `RwLock<role>` + `AtomicU32` epochs + `state_lock`(tokio `AsyncMutex`,串行化 role 转换)+ `committable_hw`(无 progress 记录的 ISR 成员跳过,不约束 HW)/`reset_follower_progress`,**无** `isr_cache`;HW 推进经 `hw.rs::advance_hw`(已生效),`hw_watchers` 由 acks=all 的 `wait_for_hw` 订阅。stale 检查扩展为 `(leader_epoch,segment_epoch)` 字典序；只在 `leader_epoch_changed` 时 reset follower progress。
+7. **fence 3 弱化**:UpdateSegmentIsr 只校验 `req.broker_epoch == node_registry[node]`,未校验 `leader_broker_epoch == segment.leader_broker_epoch`(需 proto 加字段,留后续)。
+
 ## 原子合并组
 
 下列 task 集合**必须一次合并**,因为单独合任一会破坏不变式:
@@ -17,12 +51,20 @@
 | 原子组 | 包含 task | 一起合的理由 |
 |---|---|---|
 | 元数据基础 | T1 + T2 | T1 单独合后 segment_epoch 字段在但 raft 不校验 → I3 不成立 |
-| 控制面闭环 | T3 + T13a + T13b | broker 端不响应 LeaderAndIsr 等于不感知 leader 切换 → I4 (zombie write fence) 不成立 |
-| 写入闭环 | T11a + T11b + T11c | 单独的"写入路径校验 epoch"没有 HW 推进配套 → acks=all 永远超时;单独的 HW 推进没校验 → I4 不成立;HW 不持久化崩溃后回退超出协议预期 |
+| 写入闭环 + 控制面 | T3 + T11 + T13a + T13b | broker 端不响应 LeaderAndIsr 等于不感知 leader 切换 → I4 不成立;HW 推进与 role 状态机互相依赖(HW 推进要判 leader 身份,role 切换要唤醒 acks=all 等待者),拆开任一都不成立。**功能完整性优先,这一组作为一个完整闭环交付** |
 | KIP-101 闭环 | T7 + T10 + T13c | 单独有 LeaderEpochCache 但没有 OffsetsForLeaderEpoch 流程,follower 重启走错 truncate 路径 → I9 不成立 |
 | 启动恢复闭环 | T0 + T13a | T0 单独合后 broker 永远停在 Initializing(没人转 role);T13a 单独合后 cache/log 一致性 gap 没修补 |
 
-单个 task 仍可独立开发、独立 review,但**合并到主分支必须是原子组一起合**。
+**可独立合并的接线 task**(不破坏任何不变式,因为它们只是把已完成的库代码接进进程,不改变协议语义):
+
+| task | 内容 | 为什么能独立合 |
+|---|---|---|
+| T8b | `handle_fetch` 接 RPC router | leader 应答 fetch 用现有 role 字段判断;没有 follower 真去拉之前,这只是多挂一个只读 handler,不影响任何写入/不变式 |
+| T13b′ | `ReplicaFetcherManager` 装配(手动 assign) | fetcher 池起来但只有手动 assign 的 segment 才拉;未接 role 自动切换前,不会有"误拉"——assign 由测试/启动显式触发 |
+
+单个 task 仍可独立开发、独立 review。**接线 task(T8b/T13b′)可独立合**;其余 task 合并到主分支必须按原子组一起合。
+
+> **拆分原则更新**:功能完整性优先。原"每 task ~几百到 1500 行"是参考上限,不是硬约束——若拆分会割裂一个功能闭环(如写入路径与 HW 推进、role 切换与 acks 唤醒),则宁可作为一个较大的完整 task 交付,也不为压体量而留半截状态。
 
 ---
 
@@ -41,6 +83,23 @@
 - **E 组(控制面响应)**:T12, T13a, T13b, T13c — broker 端响应 LeaderAndIsr 并做 truncation
 
 A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并行。T0 在 B 组完成后即可开始,**必须在 C/D/E 组之前完成**(它们都依赖 T0 提供的 Initializing 状态机入口)。D 组与 E 组的部分子项可并行,最终收口在 T13c(KIP-101 truncation 全流程)。
+
+> 上面是**功能分组**(回答"每块属于哪个子系统")。下面的**实际开发顺序**回答"先写哪个文件",二者不同——分组按子系统聚类,开发顺序按"能否独立落地 + 依赖是否已满足"排。
+
+### 实际开发顺序(当前推进路线)
+
+A 组(T1-T3)、B 组(T4-T7)、T0、T8a、T9 库逻辑均已完成。原 roadmap 把"接线"塞进 T13a/T13b,而 T13a 又依赖 T11、T11 又依赖 T13a 的 role/HW → 循环依赖,已完成的 T8/T9 代码无法独立跑起来。重排后路线:
+
+| 序 | task | 内容 | 依赖(均已满足) | 状态 |
+|---|---|---|---|---|
+| 1 | **T8b** | `handle_fetch` 挂 storage RPC router(`ApiKey::Fetch`),leader 端真能应答 fetch。读现有 role 字段判断,不碰 role 转换 | T8a | ✅ 完成 |
+| 2 | **T13b′** | `ReplicaFetcherManager`:固定 N 线程池(每线程独立 stop/restart)+ `assign/remove_segment` + 真实 packet `FetchTransport`;`EngineReplicaLog` 按 shard `storage_type` 动态路由 memory/rocksdb。手动 assign | T9 | ✅ 完成 |
+| 3 | **T11 + T13a**(合并) | 写入闭环(HW 推进 + acks 0/1/all 语义)与 role 状态机(`apply_leader_and_isr` 六态转换 + leader_epoch 单调防回退 + 失败回滚 role + fetcher 随 role 自动 assign/remove)一起做。与 T3 原子合并 | T8b, T13b′, T3 | ✅ 完成 |
+| 4 | **T10 + T13c** | KIP-101 truncation 全流程(OffsetsForLeaderEpoch RPC + follower 截断 + memory 全量重拉)。与 T7 原子合并 | T11+T13a | ✅ 完成(库) |
+| 5 | **T12** | ISR shrink/expand:broker 发起方(检测落后 follower→提议踢出/追上→提议加回,经 raft `UpdateSegmentIsr`) | T11+T13a | ✅ 完成 |
+| 6 | T0/T16/T17 | 启动全量扫描(持 state_lock)、ReconcileSegmentMetadata 兜底、空 ISR 恢复(QueryReplicaLeo + 选举协调器) | T11+T13a | ✅ 完成(T17 心跳触发集成测试待补) |
+
+打破循环的关键:把"接线"从 T13a/T13b 剥成 **T8b / T13b′** 两个不依赖 T11 的小 task(步骤 1、2),让已完成的库代码先在进程里跑通;role↔fetcher 的**自动**协作(role 切换时自动 assign/remove)与写入闭环一起放到步骤 3。
 
 ---
 
@@ -106,10 +165,9 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
   - 新增 `replica_fetch_min_bytes: u64`(默认 1)
   - 新增 `replica_hw_checkpoint_interval_ms: u64`(默认 5000,对齐 Kafka `replica.high.watermark.checkpoint.interval.ms`)
   - 新增 `unclean_leader_election_enable: bool`(协议要求 false,字段保留供运维报错)
-- meta-service 节点注册:
-  - `RegisterNodeRequest`:节点继续无变化
-  - `RegisterNodeResponse` 新增 `broker_epoch: u64`
-  - meta-service raft 状态机新增 `node_registry: HashMap<u64 /*node_id*/, u64 /*last_broker_epoch*/>`,每次 register 时该 node 的值 +1 并返回
+- meta-service 节点注册(实现):
+  - `RegisterNodeReply` 新增 `broker_epoch: u64`
+  - **复用 `ClusterAddNode` raft op**:apply 时 `NodeStorage::next_broker_epoch(node_id)` 在 rocksdb key `clusters/node_epoch/{node_id}` 上 +1,经 raft 响应值(8 LE bytes)返回 — **无** 内存 `node_registry` HashMap,**无** 新 `NodeRegistryUpdate` op
 - broker 进程:启动时缓存自己的 `broker_epoch`,供 §3.5 用
 
 **不做**:
@@ -120,7 +178,7 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 **验收**:
 - 老编码反序列化为带默认新字段的对象;新字段序列化往返一致
 - 单测:同一 broker 二次 register 拿到的 broker_epoch 严格递增
-- 单测:meta-service 重启后 node_registry 从 raft 日志恢复
+- 单测:broker_epoch 跨 node 独立、节点删除后再注册仍递增(fence 残留)
 
 **预估**:中(~350 行,含 raft op + 测试)
 
@@ -134,26 +192,18 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 **与 T1 一起原子合并**。单独合 T1 后字段在但无逻辑,反而误导。
 
-**改动**:
-- `meta-service/src/raft/route/engine.rs`:
-  - 新增 `EngineDataType::UpdateSegmentIsr`
-  - payload: `{ shard_name, segment_seq, new_isr, requester_node_id, requester_broker_epoch, leader_epoch, expected_segment_epoch }`
-- 状态机应用逻辑(按 §7.3 顺序):
-  1. `req.requester_node_id != current.leader` → `NotLeaderForPartition`
-  2. `req.leader_epoch != current.leader_epoch` → `FencedLeaderEpoch`
-  3. `req.requester_broker_epoch != node_registry[req.requester_node_id]` → `StaleBrokerEpoch`
-  4. `req.expected_segment_epoch != current.segment_epoch` → `InvalidUpdateVersion`
-  5. **业务合法性校验**(新增):`new_isr` 必须包含 leader、必须 ⊆ replicas、必须非空 → 否则 `InvalidIsr`
-  6. 全部通过:`current.isr = req.new_isr`,`current.segment_epoch += 1`
-- `meta-service/src/core/segment.rs::create_segment_by_shard`:
-  - 初始化新 segment:`segment_epoch=0`、`log_start_offset=0`、`leader_broker_epoch = node_registry[leader]`
-- `meta-service/src/core/leader_switch.rs::segment_leader_switch` **完全重写**(D3):
+**改动**(实现):
+- 协议:`protocol` 新增 `UpdateSegmentIsrRequest/Reply`(engine.proto);raft op `StorageDataType::StorageEngineUpdateSegmentIsr`(**非** `EngineDataType`)
+- **五重 fence 拆两层**:
+  - **server 层预检**(`update_segment_isr_by_req`,可提前快速失败):segment 存在、`requester == leader`、ISR 合法性(非空/含 leader/⊆ replicas)
+  - **raft apply 原子**(`DataRouteJournal::update_segment_isr`):leader_epoch 匹配、broker_epoch 匹配(`NodeStorage::get_broker_epoch`)、segment_epoch CAS — 这三个必须与写入原子,故在 apply 内
+  - apply **永不返业务 Err**:拒绝/成功都编码进 `IsrUpdateOutcome` 响应值(openraft 把 apply Err 当致命错,会停集群);发起端 `sync_update_segment_isr` 解码
+  - 全过:`current.isr = new_isr`,`segment_epoch += 1`,返回新 segment_epoch
+- `meta-service/src/core/segment.rs::build_segment`:新 segment `leader_broker_epoch = NodeStorage::get_broker_epoch(leader)`,其余 ISR 字段默认 0
+- `meta-service/src/core/leader_switch.rs::segment_leader_switch` **重写**(D3,纯函数 `compute_segment_after_leader_failure`):
   - **从 ISR 选 leader**(不是从 replicas) — 修复 unclean leader election bug
-  - ISR 空 → segment 标 `SegmentStatus::Unavailable`,不选 leader,等运维
-  - 从 ISR 移除故障节点
-  - `leader_epoch += 1`
-  - `segment_epoch += 1`
-  - `leader_broker_epoch = node_registry[new_leader]`
+  - ISR 空 → segment 标 `Unavailable` + 存 `last_known_isr`,不选 leader,等运维
+  - 选中:`leader_epoch += 1`、`segment_epoch += 1`、`leader_broker_epoch = NodeStorage::get_broker_epoch(new_leader)`
 - `metadata-struct/src/storage/segment.rs::SegmentStatus` 新增 `Unavailable` 枚举值
 - `metadata-struct/src/storage/segment.rs::EngineSegment` 同时新增方法:
   - `allow_read()`:`Write | PreSealUp | SealUp | Unavailable` — 修复 SealUp 不能读 bug(D4)
@@ -350,74 +400,67 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 ## C 组:数据面 RPC + 复制
 
-### T8:long-poll fetch RPC + 完整 epoch 校验(I15)
+### T8a:fetch RPC 库逻辑 + 完整 epoch 校验(I15)✅ 完成
 
-**目标**:实现 follower → leader 的 fetch 协议,follower 能拉到数据。**严格按 §6.2 顺序做完整校验**,不允许"暂时不校验 epoch"。
+**目标**:实现 follower → leader 的 fetch 协议库逻辑,**严格按 §6.2 顺序做完整校验**,不允许"暂时不校验 epoch"。本 task 只做纯库逻辑 + 单测,不接 broker router(接线见 T8b)。
 
-**前置**:T3(需要 SegmentReplicaState 的 role / leader_epoch 缓存,见 T3 的改动)、T4、T5/T6
+**前置**:T3、T4、T5/T6
 
-**改动**:
-- 新建 `storage-engine/src/isr/fetch.rs`:
-  - `pub struct FetchHandler`(leader 端)
-  - 处理 `FetchRequest`,按 §6.2 校验顺序:
-    1. role == LeaderActive(否则 NotLeaderForPartition / NotReady)
-    2. leader_epoch 三态校验(Fenced / Unknown / 通过)
-    3. fetch_offset 范围校验(返回 `OffsetOutOfRange` 带 `leader_log_start + leader_leo`,follower 据此区分 retention 落后 / 脑裂残余)
-    4. broker_epoch 校验(StaleBrokerEpoch)
-    5. 更新 follower_progress.broker_epoch / last_known_leader_epoch / leo / last_fetch_ts(无 last_caught_up_ts 精确语义,留 T9)
-    6. HW 推进逻辑预留接口,实际推进留 T11b
-  - long-poll(`tokio::time::timeout` + `Notify` 或 `watch::channel`)
-- protobuf 定义 `StorageEngineFetchRequest / FetchResponse`(见 isr.md §6.6)
-- broker RPC router:挂载 `handle_isr_fetch`
-- client wrapper:`fetch_client.fetch(req) -> resp`
+**已实现**(`storage-engine/src/isr/fetch.rs`):
+- `fetch_one_shard(cache_manager, log, replica_id, broker_epoch, req)` 按 §6.2 五重校验顺序:
+  1. role == LeaderActive(否则 NotLeaderForPartition)
+  2. leader_epoch 三态校验(Fenced / Unknown / 通过)
+  3. fetch_offset 范围校验(`OffsetOutOfRange` 带 `leader_log_start + leader_leo`)
+  4. broker_epoch 校验(经 `update_follower_progress` 返 false → StaleBrokerEpoch)
+  5. 读 records
+- `handle_fetch(engines, cache_manager, req)`:**批量跨 shard**(`Vec<FetchShardReq>` → `Vec<FetchShardResp>`,per-shard error_code),long-poll 暂为 sleep + 重收
+- protocol:`FetchReqBody{...,shards}` / `FetchRespBody{shards}` / `FetchErrorCode` / `ApiKey::Fetch` + codec
 
-**不做**:
-- 不做 `last_caught_up_ts` 的精确语义(留 T9)
-- 不真正推进 HW(留 T11b,本 task 里 HW 更新接口可以是 no-op)
-- 不真正起 fetcher 循环(留 T9)
-- 不处理 `OffsetsForLeaderEpoch`(留 T10)
-
-**验收**:
-- 单测:陈旧 leader_epoch 返回 FencedLeaderEpoch
-- 单测:陈旧 broker_epoch 返回 StaleBrokerEpoch
-- 集成测试:两 broker 一 leader 一 follower(手动构造 ReplicaState),follower 发 fetch,leader 返回 records
-- long-poll 超时返回空 records
-- min_bytes 达到立即返回
-
-**预估**:大(~750 行,含完整 epoch 校验)
+**实现偏差**:apply 永不返业务 Err(per-shard error_code);long-poll 是 sleep 而非 append 唤醒(`Notify`/`watch` 唤醒留 T11);`last_caught_up_ts` 精确语义已在 `update_follower_progress` 实现(T9 并入)。
 
 ---
 
-### T9:follower fetcher 循环 + `last_caught_up_ts` 维护
+### T8b:fetch handler 接 RPC router ✅ 完成
 
-**目标**:follower 自动拉取数据,leader 维护 follower 进度。
+**目标**:把已完成的 `handle_fetch` 挂到 storage RPC dispatch,leader 端真能应答远程 follower 的 fetch 请求。
 
-**前置**:T7, T8
+**前置**:T8a(已完成)
 
 **改动**:
-- 新建 `storage-engine/src/isr/state.rs`:
-  - `ReplicaStateRegistry / SegmentReplicaState / FollowerProgress`(见 isr.md §3.4)
-  - 不含 `hw_watcher`(留 T11)
-- 新建 `storage-engine/src/isr/fetcher.rs`(或扩 `fetch.rs`):
-  - per `(shard, segment_seq)` fetcher 任务
-  - 循环:`latest_offset → fetch → append_at → update LeaderEpochCache`
-  - 错误分支:NotLeader / FencedEpoch / OffsetOutOfRange(`FencedEpoch` 暂时只重连,T10 加 truncation;`OutOfRange` 同理)
-- leader 端 fetch handler 扩展:
-  - 收到 fetch 时更新 `follower_progress[replica_id]`
-  - `last_caught_up_ts` 按 §6.4 规则更新
+- storage RPC command dispatch(`handler/command.rs` 的 `Command::apply`)新增 `ApiKey::Fetch` 分支 → 调 `handle_fetch`
+- 装配 `FetchEngines{memory, rocksdb}`(从已有引擎实例取)传入 handler
+- client 侧 `packet.rs`:`build_fetch_req` / fetch 响应解析(供 T13b′ 的 `FetchTransport` 复用)
 
 **不做**:
-- 不做 truncation(留 T10,此时 `FencedEpoch` 只是退避重试)
-- 不做 HW 推进(留 T11)
-- 不做 ISR shrink/expand(留 T12)
+- 不碰 role 转换:leader 身份用现有 `SegmentReplicaState.role()` 字段判断(由谁设置留 T11+T13a)
+- 不起 fetcher(T13b′)
 
 **验收**:
-- 集成测试:三 broker,follower 自动拉到 leader 全部数据
-- leader 端 `last_caught_up_ts` 在 follower 追上时更新
-- 注入 follower 短暂离线,恢复后能继续拉
-- **限制**:没有 truncation,leader 切换场景会 fail(预期,留 T10)
+- 单测/集成:构造一个 LeaderActive segment,远程发 `FetchReq` packet,收到带 records 的 `FetchResp`
+- 非 leader segment 发 fetch 收到 `NotLeaderForPartition`
 
-**预估**:中大(~800 行)
+**预估**:中(功能完整性优先,不约束体量)
+
+---
+
+### T9:follower fetcher 循环(库逻辑)+ `last_caught_up_ts` 维护 ✅ 完成
+
+**目标**:follower 自动拉取数据,leader 维护 follower 进度。本 task 只做库逻辑(线程实现 + 路由函数),由 Manager spawn 接线见 T13b′。
+
+**前置**:T7, T8a
+
+**已实现**(`storage-engine/src/isr/state.rs` + `fetcher.rs`):
+- `state.rs`:`SegmentReplicaState`(`RwLock<role>` + `AtomicU32` epochs + `DashMap` follower_progress)、`FollowerProgress`、`ReplicaRole` 六态。`update_follower_progress` 含 `last_caught_up_ts` 精确语义
+- `fetcher.rs`:
+  - **固定数量 fetcher 线程** `ReplicaFetcherThread<T: FetchTransport, L: ReplicaLog>`,每线程持一批 `(shard, segment_seq)`,segment 按 `leader_node_id % N` 分配(`fetcher_index`)。**非 per-segment 任务**
+  - `fetch_round`:按 leader 分组 → 每组一个批量 `FetchReq` → 分发 resp,每 segment `latest_offset → fetch → append_at → assign LeaderEpochCache`
+  - `run(stop)`:select-loop,无进度时按配置退避;`add_segment / remove_segment / segment_count`
+  - broker_epoch / min_bytes / max_wait_ms / backoff 运行时从 broker cache 动态读(重新注册后 epoch 自动刷新)
+
+**实现偏差**:
+- `state.rs` 的 `SegmentReplicaState` 存进 `StorageCacheManager.segment_replica_states`(`DashMap<(shard,seg), Arc<_>>`),**无独立 `ReplicaStateRegistry`**;`hw_watchers` 已建但 HW 推进 no-op(T11)
+- 错误分支:`FencedEpoch` / `OffsetOutOfRange` 暂时只退避或(retention 落后时)clear 重拉;truncation 留 T10
+- leader 端 `follower_progress` / `last_caught_up_ts` 更新在 T8a 的 `fetch_one_shard` 内完成
 
 ---
 
@@ -453,7 +496,7 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 ## D 组:写入闭环
 
-> D 组三个子项 **T11a + T11b + T11c 必须一起合并**(原子组,见顶部"原子合并组")。单独合任一会让 acks=all 永远 timeout 或 epoch 校验缺失,违反 I4/I6。
+> **开发重排**:D 组三个子项 **T11a + T11b + T11c 与 T13a(role 状态机)+ T3 合并为一个完整闭环 task** 一起开发交付(见顶部"原子合并组"的"写入闭环 + 控制面"组)。原因:HW 推进要判 leader 身份、role 切换要唤醒 acks=all 等待者,写入与 role 互相依赖,拆开任一都留半截或违反 I4/I6。下面 T11a/b/c 的拆分仍用于**组织实现内容**,不再是独立合并单元。
 
 ### T11a:写入路径完整 epoch 校验 + 原子性(I4)
 
@@ -592,10 +635,10 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 **改动**:
 - 新建 `storage-engine/src/isr/alter_partition.rs`(或 `manager.rs`):
   - leader 后台扫 `follower_progress`,按 §7.1 / §7.2 判定:
-    - shrink:`lag_ms > replica_lag_time_max_ms` → 调 `AlterPartition(new_isr = isr - {node_id})`
-    - expand:满足 §7.2 全部条件(`leo >= leader.leo` + `last_known_leader_epoch == leader_epoch` + `broker_epoch` 未 fence + flapping 抑制) → 调 `AlterPartition(new_isr = isr + {node_id})`
+    - shrink:`lag_ms > replica_lag_time_max_ms` → 调 `UpdateSegmentIsr(new_isr = isr - {node_id})`
+    - expand:满足 §7.2 全部条件(`leo >= leader.leo` + `last_known_leader_epoch == leader_epoch` + `broker_epoch` 未 fence + flapping 抑制) → 调 `UpdateSegmentIsr(new_isr = isr + {node_id})`
   - 调用时携带 `leader_epoch / requester_broker_epoch / expected_segment_epoch`
-- **AlterPartition 重试策略**(isr.md §11.2):
+- **UpdateSegmentIsr 重试策略**(isr.md §11.2):
 
   | error | 重试动作 |
   |---|---|
@@ -606,7 +649,7 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
   | `NotLeaderForPartition` | 退避 50ms 重试最多 3 次,仍失败等 LeaderAndIsr |
   | 网络超时 | **不立刻重试**(可能已成功),主动读 meta 当前 ISR,若已是目标值视为成功 |
 
-- **节流**:单 segment 同时只一个 in-flight AlterPartition,新请求合并到 pending;500ms 内最多一次(避免 flap)
+- **节流**:单 segment 同时只一个 in-flight UpdateSegmentIsr,新请求合并到 pending;500ms 内最多一次(避免 flap)
 - T9 的 `last_caught_up_ts` 必须严格按 §6.4 维护(本 task 顺手补强)
 - ISR 变更后 hw_watcher 触发(因为 ISR 缩小后 HW 可能能推进)
 
@@ -625,13 +668,17 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 ---
 
-### T13a:数据面响应 LeaderAndIsr(role 状态机 + 并发串行化)
+### T13a:数据面响应 LeaderAndIsr(role 状态机 + 并发串行化)✅ 完成
+
+> **开发重排**:T13a 与 **T11(写入闭环)合并为一个 task** 一起开发交付。理由:HW 推进(T11b)要判 leader 身份、role 切换(T13a)要唤醒 acks=all 等待者(T11a 的等待队列),二者循环依赖,拆开任一都留半截。功能完整性优先,作为一个完整闭环交付,并与 T3 原子合并。fetcher 的**自动** assign/remove(role 切换驱动)也在此 task 接上 T13b′ 的 Manager。
+>
+> **实现偏差(已落地)**:`apply_leader_and_isr`(`isr/role.rs`)在 `state_lock` 内做转换;成为 leader 时**转 LeaderActive 前** `LeaderEpochCache.assign`(失败回滚 role 到 prev,不卡 LeaderInitializing 中间态);入口加 `leader_epoch < state.leader_epoch()` 单调守卫防回退;成为 follower 时 load epoch cache 成功后才转 FollowerActive 并 `assign_segment`。`LeaderDemoting` 态与 acks=all 等待者的"切 leader 时主动唤醒返 NotLeaderForPartition"尚未实现(当前 acks=all 仅靠 `wait_for_hw` 超时返错);通知缓存队列、§8.1 中 LeaderDemoting 排空 in-flight 写 也未做。stale 通知过滤(`dynamic_cache.rs`)按 `(segment_epoch, leader_epoch)` 字典序。
 
 **目标**:broker 端实现完整的 Initializing / LeaderInitializing / LeaderActive / LeaderDemoting / FollowerInitializing / FollowerActive 状态转换(§8.1),含 fetcher/通知/写入的并发协调。
 
-**前置**:T3、T7、T11a
+**前置**:T3、T7、T8b、T13b′(Manager 已可被 role 驱动)、与 T11 同 task
 
-**与 T3 一起原子合并**(否则 T3 上线后 broker 不切 role,违反 I4)。
+**与 T3 + T11 一起原子合并**(否则 T3 上线后 broker 不切 role,违反 I4;HW 推进与 role 互依赖)。
 
 **改动**:
 - `SegmentReplicaState` 加 `state_lock: AsyncMutex<()>`,**segment 级**;`ShardReplicaState.write_lock` 已在 T11a 加(shard 级)
@@ -681,26 +728,46 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 ---
 
-### T13b:Fetcher 管理与角色切换协作
+### T13b′:Fetcher Manager 装配(手动 assign)✅ 完成
 
-**目标**:fetcher 任务的启停生命周期与 role 切换协调。
+> **开发重排**:从原 T13b 剥出"不依赖 role 状态机"的装配部分**提前**做。这样 T9 的线程实现能先在进程里跑起来(手动 assign 即可拉数据),不必等 T11+T13a。role 驱动的**自动** assign/remove 留在 T13a(与 T11 同 task)。
 
-**前置**:T9、T13a
+**目标**:实例化 fetcher 线程池,提供 `assign/remove_segment` 路由,接真实网络 transport。手动 assign 触发即可拉数据。
+
+**前置**:T9、T8b(需要 `build_fetch_req` + client 发包路径)
 
 **改动**:
-- `storage-engine/src/isr/fetcher_manager.rs`:
-  - per `(shard, segment_seq)` 启动/停止 fetcher
-  - fetcher task 优雅退出(在 fetch round-trip 完成边界退,避免落盘到一半)
-  - 与 T13a 的 role 切换协作:role → Follower 时启 fetcher,role → Leader 时停 fetcher
+- 新建 `storage-engine/src/isr/fetcher_manager.rs`:
+  - `ReplicaFetcherManager`:实例化固定 N 个 `ReplicaFetcherThread`(N=`num_replica_fetchers`),每线程 spawn 一个 `run` 任务,持 stop 句柄
+  - `assign_segment(shard, seg, leader_node, ...)` 按 `fetcher_index(leader, N)` 路由到某线程 `add_segment`;`remove_segment` 同理
+  - **混合引擎**:新建 `EngineReplicaLog` enum { `Memory(Arc<MemoryStorageEngine>)`, `RocksDB(Arc<RocksDBStorageEngine>)` } 实现 `ReplicaLog`,按 shard `storage_type` 选;线程 `L = EngineReplicaLog`,一个线程可混服两种引擎
+  - 真实 packet `FetchTransport`:实现 `fetch(leader_node, req)`,复用 `ClientConnectionManager::read_send(node_id, packet)` 发到目标 broker,解包 `FetchResp`
 
 **不做**:
-- 跨 segment seal 时的 fetcher 切换(filesegment 专属,留 T15)
+- **不**接 role 自动切换(role → Follower 自动 assign / role → Leader 自动 remove 留 T13a);本 task 的 assign 由测试或启动显式调用
+- 跨 segment seal 时的 fetcher 切换(留 T15)
+
+**验收**:
+- 单测:segment 数远大于线程数时 task 数 == N(不随 shard 爆炸)
+- 集成测试:手动 assign 一个 follower segment,Manager 自动拉到 leader 全部数据
+- `EngineReplicaLog` 两种变体都能被 fetcher append
+
+**预估**:中(功能完整性优先,核心 thread 已在 T9)
+
+---
+
+### T13b(剩余):Fetcher 与角色切换的自动协作
+
+> 并入 **T13a + T11** 同 task。T13b′ 的 Manager 已可手动 assign;此处只补 role 切换驱动的自动 assign/remove。
+
+**改动**:
+- role → Follower(FollowerInitializing→Active):`manager.assign_segment(target=新 leader)`
+- role → Leader / 移出 replicas:`manager.remove_segment`
+- 与 T13a 的并发协调:fetcher loop 在 state_lock 内取 snapshot(target/epoch/leo)→ 锁外发 RPC → 锁外等 resp → 拿 lock 二次校验 role/epoch,不匹配则 discard;`stop` 只改 role 不取消 in-flight
 
 **验收**:
 - 集成测试:role 反复切换(L→F→L→F),fetcher 不泄漏不僵死
-- 单测:fetcher 任务取消时不丢未持久化的 append(在 append + fsync 边界退)
-
-**预估**:中(~400 行)
+- 单测:fetcher 在 fetch RPC 期间收到 LeaderAndIsr,response 回来后被 discard,不写本地
 
 ---
 
@@ -731,17 +798,76 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 
 ---
 
+### T16:metadata reconcile 兜底(防广播丢失死循环,§12.18)
+
+**目标**:关闭"LeaderAndIsr 广播 best-effort 丢失 → leader 永久停在旧 epoch → follower 永远 UnknownLeaderEpoch 退避"的死循环窗口。meta push 为低延迟主路径,broker pull reconcile 为正确性兜底。
+
+**前置**:T3(LeaderAndIsr 处理)、T8(fetch handler 拿得到 `req.current_leader_epoch`)、T13a(角色状态机)
+
+**改动**:
+- meta-service 新增只读 grpc `ReconcileSegmentMetadata(ReconcileRequest) -> ReconcileReply`(见 isr.md §11.2):
+  - 入参带 broker 本地 `known_segment_epoch`;meta 直接读状态机当前值,仅当 `meta.segment_epoch > known` 才返回完整 `EngineSegment`(`has_update=true`)
+  - **不走 raft 写**(只读对账)
+- broker 端两条触发路径:
+  - **被动**:fetch handler(T8)收到 `req.current_leader_epoch > self.leader_epoch` → 触发本 segment reconcile,带去重 + `reconcile_min_interval_ms`(默认 1000)限频
+  - **主动**:后台周期任务每 `metadata_reconcile_interval_ms`(默认 30_000)对本地所有 segment 比对 segment_epoch
+- reconcile 拿到 `has_update=true` 后,按 §8.1 三个 case 处理(**复用 T13a 的状态机入口**),幂等:`segment_epoch <= local` 丢弃
+- 新增配置 `metadata_reconcile_interval_ms / reconcile_min_interval_ms`(T1 已在 EngineShardConfig 预留)
+
+**不做**:
+- 不改 meta push 主路径(广播仍是 best-effort,reconcile 只补正确性)
+
+**验收**:
+- 集成测试(**§12.18 回归**):人为丢弃一次 leader_epoch 升级的 LeaderAndIsr 广播 → 验证 leader 通过 reconcile 在 `metadata_reconcile_interval_ms` 内追上,follower 不再 UnknownLeaderEpoch
+- 单测:被动 reconcile 限频(高频 fetch 不打爆 reconcile)
+- 单测:reconcile 幂等(`segment_epoch <= local` 不触发状态机重入)
+
+**预估**:中(~450 行)
+
+---
+
+### T17:空 ISR(Unavailable)半自动恢复(§12.19)
+
+**目标**:把"空 ISR → 永久 Unavailable → 等运维瞎猜"升级为"数据安全可证明的半自动恢复"。**不引入完整 ELR**。
+
+**前置**:T2(leader switch / Unavailable 标记)、T9(LEO 维护)、T13a
+
+**改动**:
+- T2 的 `segment_leader_switch` None 分支:进入 Unavailable 时把"去掉 failed 之前的 ISR"写入 `EngineSegment.last_known_isr`(T1 字段已预留)
+- 数据面新增 `QueryReplicaState` RPC(meta → broker,走 storage-engine 通道,见 isr.md §11.1):返回该副本本地 `(segment_leo, latest_leader_epoch, log_start_offset, available)`
+- meta-service 新增**恢复协调器**:
+  - 心跳模块感知 `last_known_isr` 成员上线 → 把 segment 加入"待恢复"队列(不立即选)
+  - 对每个待恢复 segment:向已上线的 `last_known_isr` 成员发 `QueryReplicaState`,等待至多 `unavailable_recovery_wait_ms`(默认 30_000)
+  - 选 LEO 最大(并列时 latest_leader_epoch 最大)且 `available=true` 的成员为新 leader:
+    `leader_epoch += 1 / segment_epoch += 1 / isr = {new_leader} / status = Write / 清空 last_known_isr`,广播 LeaderAndIsr
+  - 其余成员作为 follower 走 T13c KIP-101 truncation 对齐
+- 运维 API(**显式人工 unclean**):当 `last_known_isr` 全部永久丢失时,运维确认后可强制指定非 ISR 副本上任,**强制审计日志**
+
+**不做**:
+- 不引入持续维护的 ELR 集合(§18.7,仅用缩空时的一次性快照)
+- 不自动从非 `last_known_isr` 副本选 leader(那是 unclean,必须人工)
+
+**验收**:
+- 集成测试(**§12.19 回归**):3 副本全挂 → segment Unavailable + last_known_isr 记录正确 → 成员陆续恢复 → 验证选中 LEO 最大者、不丢已 committed 数据
+- 单测:多成员先后恢复,先回来的 LEO 较小 → 不被选中(等窗口内 LEO 更大者)
+- 单测:`last_known_isr` 全失联 → 不自动选 leader,需人工 API
+- 单测:恢复后 isr={new_leader},其余 follower 通过 truncation 对齐
+
+**预估**:中大(~650 行)
+
+---
+
 ### T14:故障演练用例集
 
 **目标**:把 isr.md §12 的全部场景写成自动化回归测试。
 
-**前置**:T11c, T13c
+**前置**:T11c, T13c, T16, T17
 
 **改动**:
 - `tests/isr/` 新建:
   - 每个场景一个测试文件,模拟触发 + 验证避免机制有效
   - 用 `tokio::time` mock 时间,网络分区用 mocked transport
-- 至少覆盖 §12.1 ~ §12.16 全部 16 个场景
+- 覆盖 §12.1 ~ §12.19 全部 19 个场景(含 §12.17 启动竞态、§12.18 广播丢失死循环、§12.19 空 ISR 恢复)
 
 **预估**:大(~1500 行测试代码)
 
@@ -781,11 +907,13 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 | T11a | 写入路径 epoch 校验 + 原子性(I4,不含 cache.assign) | D | T3, T6, T7 | 大 | T11a+b+c |
 | T11b | HW 推进(I6 单调,含 epoch 过滤 + 边缘 case) + acks=all 等待 | D | T11a | 中 | T11a+b+c |
 | T11c | HW 异步 checkpoint(5s,KIP-101 兜底) | D | T11b | 中 | T11a+b+c |
-| T12 | ISR 维护后台(shrink/expand + AlterPartition 重试) | E | T2, T9, T11b | 中 | — |
+| T12 | ISR 维护后台(shrink/expand + UpdateSegmentIsr 重试) | E | T2, T9, T11b | 中 | — |
 | T13a | LeaderAndIsr role 状态机(§8.1) + 并发串行化 + acks=all 售后 | E | T0, T3, T7, T11a | 大 | T3+T13a |
 | T13b | Fetcher 管理与 role 切换协作 | E | T9, T13a | 中 | — |
 | T13c | OffsetsForLeaderEpoch 替换占位 truncation(I9 闭环) | E | T10, T13a, T13b | 大 | T7+T10+T13c |
-| T14 | §12 全场景故障演练用例集 | — | T11c, T13c | 大 | — |
+| T16 | metadata reconcile 兜底(防广播丢失死循环,§12.18) | E | T3, T8, T13a | 中 | — |
+| T17 | 空 ISR(Unavailable)半自动恢复(§12.19) | E | T2, T9, T13a | 中大 | — |
+| T14 | §12 全场景故障演练用例集 | — | T11c, T13c, T16, T17 | 大 | — |
 | T15 | filesegment 引擎接入(可选) | — | T10, T13c | 大 | — |
 
 ### 里程碑
@@ -795,15 +923,17 @@ A 组和 B 组可完全并行。C 组需要 B 组先有 trait,可以与 A 组并
 | M1:元数据就位 | T1+T2 | meta-service 已能接受 ISR 变更请求(虽然还没人发) | 数据面什么都做不了 |
 | M2:本地存储就位 | T4+T5+T6+T7+T0 | 单进程能读写本地副本日志 + 持久化 LeaderEpochCache + 启动恢复闭环 | 没有跨节点复制 |
 | M3:首次能见副本同步 | M1+M2+T3+T8+T9+T13a+T13b | 三节点 follower 能追上 leader,leader 切换 role 切换正确,启动恢复正确 | 没 truncation(脏日志会停留),没 acks=all,ISR 永远=replicas |
-| M4:协议正确性闭环 | M3+T10+T11(全)+T12+T13c | **完整协议**:KIP-101 truncation、acks=all、ISR 自动收缩、segment_epoch CAS、AlterPartition 重试 全部生效 | 没 §12 全套故障演练验证 |
-| M5:production-ready | M4+T14 | §12.x 17 个异常场景全部回归通过 | filesegment 未接入 |
+| M4:协议正确性闭环 | M3+T10+T11(全)+T12+T13c+T16+T17 | **完整协议**:KIP-101 truncation、acks=all、ISR 自动收缩、segment_epoch CAS、UpdateSegmentIsr 重试、广播丢失 reconcile 兜底(§12.18)、空 ISR 半自动恢复(§12.19) 全部生效 | 没 §12 全套故障演练验证 |
+| M5:production-ready | M4+T14 | §12.x 19 个异常场景全部回归通过 | filesegment 未接入 |
 | M6:全引擎 | M5+T15 | filesegment 也走 ISR 协议 | — |
 
 **关键路径**(决定最早能跑到 M4 的依赖链):
 - 基础设施:T1 → T6 → T7 → **T0**(启动恢复必须在数据面跑起来前到位)
 - 控制面链:T1 → T2 → T12
 - 数据面链:T4 → T6 → T7 → T8 → T9 → T10 → T13c
-- 收口:T0 + T3+T13a → T11a → T11b/c → T13c
+- 收口:T0 + T3+T13a → T11a → T11b/c → T13c → T16/T17(健壮性兜底,可与 T13c 并行)
+
+> T16/T17 不在最长依赖链上(可与 D 组/T13c 并行开发),但**必须进 M4** —— 缺 T16 则广播丢失会死循环,缺 T17 则空 ISR 永久不可用,这两个都是生产环境真实会遇到的,不是可选项。
 
 **最强建议**:
 - **T0 必须早做**(在 M2 内完成)。如果 T13a 实现完后才发现启动恢复有 gap,会被迫返工 cache 修复逻辑分散在两处。

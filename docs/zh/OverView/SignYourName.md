@@ -12,6 +12,7 @@ RobustMQ 想邀请你给我们签个名，这个签名会一直挂在我们的�
 @patwrall
 @flyswimmer
 @satori1995
+@skymacro
 @WaterWhisperer
 @NuclEnergy
 @hzbnb
@@ -31,6 +32,9 @@ RobustMQ 想邀请你给我们签个名，这个签名会一直挂在我们的�
 @CsongSY
 @teague2
 @wanliofficial
+@JasonDing1024
+@alpha-99
+@chyu-wissfi
 
 ## 怎么给我们签名呢
 

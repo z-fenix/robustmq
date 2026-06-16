@@ -24,12 +24,23 @@ use common_base::error::common::CommonError;
 use common_config::{broker::broker_config, storage::StorageType};
 use grpc_clients::{meta::mqtt::call::placement_create_topic, pool::ClientPool};
 use metadata_struct::{
-    mqtt::topic::Topic, storage::shard::EngineShardConfig, tenant::DEFAULT_TENANT,
+    mqtt::topic::{Topic, TopicSource},
+    storage::shard::EngineShardConfig,
+    tenant::DEFAULT_TENANT,
 };
 use protocol::meta::meta_service_mqtt::CreateTopicRequest;
 use std::{sync::Arc, time::Duration};
 use tokio::time::{sleep, timeout};
-use tracing::info;
+use tracing::{debug, info};
+
+pub fn topic_replication_num(replica_num: u32) -> u32 {
+    let conf = broker_config();
+    if conf.meta_addrs.len() == 1 {
+        1
+    } else {
+        replica_num
+    }
+}
 
 pub async fn create_topic_full(
     broker_cache: &Arc<NodeCacheManager>,
@@ -73,6 +84,8 @@ pub async fn create_topic_full(
         max_segment_size: topic.config.max_segment_size,
         max_record_num: topic.config.max_record_num,
         retention_sec: topic.config.retention_sec,
+        is_inner_topic: topic.source == TopicSource::SystemInner,
+        ..Default::default()
     };
     storage_driver_manager
         .create_storage_resource(&topic.tenant, &topic.topic_name, &shard_config)
@@ -118,7 +131,7 @@ async fn init_single_inner_topic(
     topic_name: &str,
 ) -> Result<(), CommonError> {
     if let Some(topic) = broker_cache.get_topic_by_name(DEFAULT_TENANT, topic_name) {
-        info!(
+        debug!(
             "Inner topic '{}' already exists, ensuring storage shard is provisioned",
             topic_name
         );
@@ -128,6 +141,8 @@ async fn init_single_inner_topic(
             max_segment_size: topic.config.max_segment_size,
             max_record_num: topic.config.max_record_num,
             retention_sec: topic.config.retention_sec,
+            is_inner_topic: topic.source == TopicSource::SystemInner,
+            ..Default::default()
         };
         storage_driver_manager
             .create_storage_resource(DEFAULT_TENANT, topic_name, &shard_config)
@@ -135,9 +150,12 @@ async fn init_single_inner_topic(
         return Ok(());
     }
 
-    info!("Inner topic '{}' not found, creating...", topic_name);
-
-    let topic = Topic::new(DEFAULT_TENANT, topic_name, StorageType::EngineRocksDB);
+    let conf = broker_config();
+    let topic = Topic::new(DEFAULT_TENANT, topic_name, StorageType::EngineRocksDB)
+        .with_partition(conf.runtime.default_topic_partition_num)
+        .with_replication(topic_replication_num(
+            conf.runtime.default_topic_replica_num,
+        ));
     create_topic_full(broker_cache, storage_driver_manager, client_pool, &topic).await?;
 
     info!("Inner topic '{}' created successfully", topic_name);

@@ -71,6 +71,8 @@ pub fn default_runtime() -> Runtime {
         tls_cert: "./config/certs/cert.pem".to_string(),
         tls_key: "./config/certs/key.pem".to_string(),
         pprof_enable: false,
+        default_topic_partition_num: 3,
+        default_topic_replica_num: 2,
     }
 }
 
@@ -90,6 +92,8 @@ pub fn default_meta_runtime() -> MetaRuntime {
         offset_raft_group_num: 1,
         data_raft_group_num: 1,
         group_offset_expire_sec: 7 * 24 * 3600,
+        segment_leader_rebalance_interval_ms: 60_000,
+        segment_leader_rebalance_max_moves: 50,
     }
 }
 
@@ -202,6 +206,13 @@ pub fn default_engine_runtime() -> StorageRuntime {
         io_thread_num: 8,
         offset_enable_cache: true,
         expire_scan_task_num: 16,
+        num_replica_fetchers: 4,
+        replica_fetch_min_bytes: 1,
+        replica_fetch_max_wait_ms: 500,
+        replica_fetch_backoff_ms: 1000,
+        replica_lag_time_max_ms: 10000,
+        metadata_reconcile_interval_ms: 30000,
+        isr_maintain_interval_ms: 1000,
         network: default_network(),
     }
 }
@@ -369,6 +380,33 @@ pub fn default_storage_offset_enable_cache() -> bool {
 }
 pub fn default_storage_expire_scan_task_num() -> usize {
     16
+}
+pub fn default_storage_num_replica_fetchers() -> u32 {
+    4
+}
+pub fn default_storage_replica_fetch_min_bytes() -> u64 {
+    1
+}
+pub fn default_storage_replica_fetch_max_wait_ms() -> u64 {
+    500
+}
+pub fn default_storage_replica_fetch_backoff_ms() -> u64 {
+    1000
+}
+pub fn default_storage_replica_lag_time_max_ms() -> u64 {
+    10000
+}
+pub fn default_storage_metadata_reconcile_interval_ms() -> u64 {
+    30000
+}
+pub fn default_storage_isr_maintain_interval_ms() -> u64 {
+    1000
+}
+pub fn default_topic_partition_num() -> u32 {
+    1
+}
+pub fn default_topic_replica_num() -> u32 {
+    2
 }
 
 // ClusterLimit

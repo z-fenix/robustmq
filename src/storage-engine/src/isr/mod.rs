@@ -12,4 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod fetch;
+pub mod fetcher;
+pub mod fetcher_manager;
+pub mod follower;
+pub mod handle_fetch;
+pub mod log_replica;
+pub mod packet_transport;
+
+pub mod apply;
+pub mod handle_epoch;
+pub mod isr_manager;
+pub mod leader_epoch;
+pub mod log;
+pub mod reconcile;
+pub mod recover;
+
+#[cfg(test)]
+pub mod test_util;

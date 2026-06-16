@@ -20,6 +20,7 @@ use crate::commitlog::rocksdb::engine::RocksDBStorageEngine;
 use crate::filesegment::expire::start_segment_expire_thread;
 use crate::filesegment::write::WriteManager;
 use crate::handler::adapter::StorageEngineHandler;
+use crate::isr::fetcher_manager::ReplicaFetcherManager;
 use crate::server::Server;
 use common_base::task::{TaskKind, TaskSupervisor};
 use core::cache::StorageCacheManager;
@@ -52,6 +53,7 @@ pub struct StorageEngineParams {
     pub storage_engine_handler: Arc<StorageEngineHandler>,
     pub global_limit_manager: Arc<GlobalRateLimiterManager>,
     pub task_supervisor: Arc<TaskSupervisor>,
+    pub fetcher_manager: Arc<ReplicaFetcherManager>,
 }
 
 pub struct StorageEngineServer {
@@ -62,6 +64,8 @@ pub struct StorageEngineServer {
     client_connection_manager: Arc<ClientConnectionManager>,
     rocksdb_storage_engine: Arc<RocksDBStorageEngine>,
     memory_storage_engine: Arc<MemoryStorageEngine>,
+    rocksdb_engine_handler: Arc<RocksDBEngine>,
+    fetcher_manager: Arc<ReplicaFetcherManager>,
     server: Arc<Server>,
     task_supervisor: Arc<TaskSupervisor>,
 }
@@ -96,6 +100,8 @@ impl StorageEngineServer {
             client_connection_manager: params.client_connection_manager,
             rocksdb_storage_engine: params.rocksdb_storage_engine,
             memory_storage_engine: params.memory_storage_engine,
+            rocksdb_engine_handler: params.rocksdb_engine_handler,
+            fetcher_manager: params.fetcher_manager,
             stop,
             server,
             task_supervisor,
@@ -103,6 +109,16 @@ impl StorageEngineServer {
     }
 
     pub async fn start(&self) -> Result<(), std::io::Error> {
+        crate::isr::recover::recover_local_segments(
+            &self.cache_manager,
+            &self.memory_storage_engine,
+            &self.rocksdb_storage_engine,
+            &self.rocksdb_engine_handler,
+        )
+        .await;
+
+        self.fetcher_manager.start();
+
         self.start_daemon_thread();
 
         self.start_tcp_server().await?;
@@ -156,6 +172,44 @@ impl StorageEngineServer {
                 memory_storage_engine.start_expire_task(&stop_sx).await;
             },
         );
+
+        // ISR shrink/expand maintenance
+        let client_pool = self.client_pool.clone();
+        let cache_manager = self.cache_manager.clone();
+        let memory_storage_engine = self.memory_storage_engine.clone();
+        let rocksdb_storage_engine = self.rocksdb_storage_engine.clone();
+        let stop_sx = self.stop.clone();
+        self.task_supervisor
+            .spawn(TaskKind::StorageEngineIsrMaintain.to_string(), async move {
+                crate::isr::isr_manager::start_isr_manager_thread(
+                    client_pool,
+                    cache_manager,
+                    memory_storage_engine,
+                    rocksdb_storage_engine,
+                    &stop_sx,
+                )
+                .await;
+            });
+
+        // metadata reconcile (closes the LeaderAndIsr broadcast-loss window)
+        let client_pool = self.client_pool.clone();
+        let cache_manager = self.cache_manager.clone();
+        let fetcher_manager = self.fetcher_manager.clone();
+        let rocksdb_engine_handler = self.rocksdb_engine_handler.clone();
+        let stop_sx = self.stop.clone();
+        self.task_supervisor.spawn(
+            TaskKind::StorageEngineMetadataReconcile.to_string(),
+            async move {
+                crate::isr::reconcile::start_metadata_reconcile_thread(
+                    client_pool,
+                    cache_manager,
+                    fetcher_manager,
+                    rocksdb_engine_handler,
+                    &stop_sx,
+                )
+                .await;
+            },
+        );
     }
 
     async fn waiting_stop(&self) {
@@ -165,6 +219,7 @@ impl StorageEngineServer {
                 // Give handler threads a moment to observe the stop signal before
                 // request_channel is dropped, avoiding spurious "channel closed" warnings.
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                self.fetcher_manager.shutdown();
                 info!("Storage Engine has stopped.");
             }
             Err(e) => {
