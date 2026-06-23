@@ -17,19 +17,98 @@ use crate::commitlog::memory::engine::MemoryStorageEngine;
 use crate::commitlog::rocksdb::engine::RocksDBStorageEngine;
 use crate::core::cache::StorageCacheManager;
 use crate::core::error::StorageEngineError;
+use crate::core::offset::ShardOffset;
 use crate::core::read_key::{read_by_key, ReadByKeyParams};
 use crate::core::read_offset::{read_by_offset, ReadByOffsetParams};
 use crate::core::read_tag::{read_by_tag, ReadByTagParams};
 use crate::core::write::batch_write;
-use crate::filesegment::write::WriteManager;
+use crate::filesegment::write_manager::WriteManager;
 use common_base::utils::serialize::{deserialize, serialize};
+use common_config::storage::StorageType;
+use metadata_struct::adapter::adapter_offset::AdapterOffsetStrategy;
 use metadata_struct::adapter::adapter_read_config::AdapterReadConfig;
 use metadata_struct::adapter::adapter_record::AdapterWriteRecord;
 use protocol::storage::protocol::{
-    ReadReqBody, ReadType, StorageEngineNetworkError, WriteRespMessage, WriteRespMessageStatus,
+    ReadReqBody, ReadType, ShardOffsetReqBody, ShardOffsetRespBody, StorageEngineNetworkError,
+    WriteRespMessage, WriteRespMessageStatus,
 };
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
+
+pub async fn shard_offset_req(
+    cache_manager: &Arc<StorageCacheManager>,
+    memory_storage_engine: &Arc<MemoryStorageEngine>,
+    rocksdb_storage_engine: &Arc<RocksDBStorageEngine>,
+    req_body: &ShardOffsetReqBody,
+) -> Result<ShardOffsetRespBody, StorageEngineError> {
+    let shard_name = req_body.shard_name.as_str();
+    let Some(shard) = cache_manager.shards.get(shard_name) else {
+        return Err(StorageEngineError::ShardNotExist(shard_name.to_string()));
+    };
+
+    // For EngineSegment, the caller routes to the specific segment's leader, which may
+    // differ from the active-segment leader. Skip the active-segment leader check in
+    // that case; for Memory/RocksDB the active segment IS the only segment, so check.
+    if !matches!(shard.config.storage_type, StorageType::EngineSegment) {
+        let active_segment = cache_manager
+            .get_active_segment(shard_name)
+            .ok_or_else(|| StorageEngineError::NotAvailableSegments(shard_name.to_string()))?;
+        if !active_segment.is_leader() {
+            return Err(StorageEngineError::NotLeader(active_segment.name()));
+        }
+    }
+
+    let shard_offsets = ShardOffset::new(
+        cache_manager.clone(),
+        rocksdb_storage_engine.rocksdb_engine_handler.clone(),
+    )
+    .get_shard_offsets(shard_name)?;
+
+    let start_offset = shard_offsets.earliest_offset;
+    let end_offset = shard_offsets.latest_offset.saturating_sub(1);
+    let high_watermark = shard_offsets.high_watermark_offset;
+
+    let strategy = if req_body.strategy == 1 {
+        AdapterOffsetStrategy::Latest
+    } else {
+        AdapterOffsetStrategy::Earliest
+    };
+
+    let offset = if req_body.by_timestamp {
+        match shard.config.storage_type {
+            StorageType::EngineMemory => {
+                memory_storage_engine
+                    .get_offset_by_timestamp(shard_name, req_body.timestamp, strategy)
+                    .await?
+            }
+            StorageType::EngineRocksDB => {
+                rocksdb_storage_engine
+                    .get_offset_by_timestamp(shard_name, req_body.timestamp, strategy)
+                    .await?
+            }
+            StorageType::EngineSegment => {
+                crate::filesegment::read::get_segment_offset_by_timestamp(
+                    cache_manager,
+                    &rocksdb_storage_engine.rocksdb_engine_handler,
+                    shard_name,
+                    req_body.timestamp,
+                    strategy,
+                )?
+            }
+            t => return Err(StorageEngineError::UnsupportedStorageType(format!("{t:?}"))),
+        }
+    } else {
+        0
+    };
+
+    Ok(ShardOffsetRespBody {
+        start_offset,
+        end_offset,
+        high_watermark,
+        offset,
+        error_code: 0,
+    })
+}
 
 fn params_validator(
     cache_manager: &Arc<StorageCacheManager>,
@@ -145,6 +224,7 @@ pub async fn read_data_req(
                     shard_name: raw.shard_name.clone(),
                     offset,
                     read_config,
+                    single_segment: raw.batch_call_source,
                 })
                 .await?
             }
@@ -206,10 +286,10 @@ pub async fn read_data_req(
 #[cfg(test)]
 mod tests {
     use crate::commitlog::memory::engine::MemoryStorageEngine;
-    use crate::commitlog::offset::CommitLogOffset;
     use crate::commitlog::rocksdb::engine::RocksDBStorageEngine;
+    use crate::core::offset::ShardOffset;
     use crate::core::test_tool::test_init_segment;
-    use crate::filesegment::write::WriteManager;
+    use crate::filesegment::write_manager::WriteManager;
     use crate::handler::data::read_data_req;
     use crate::{clients::manager::ClientConnectionManager, handler::data::write_data_req};
     use bytes::Bytes;
@@ -246,8 +326,7 @@ mod tests {
         let (segment_iden, cache_manager, _, rocksdb_engine_handler) =
             test_init_segment(engine_storage_type).await;
 
-        let commit_offset =
-            CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
+        let commit_offset = ShardOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
         commit_offset
             .save_earliest_offset(&segment_iden.shard_name, 0)
             .unwrap();
@@ -256,7 +335,7 @@ mod tests {
             .unwrap();
         cache_manager.save_offset_state(
             segment_iden.shard_name.clone(),
-            crate::commitlog::offset::ShardOffsetState::default(),
+            crate::core::offset::ShardOffsetState::default(),
         );
 
         let shard_info = cache_manager.shards.get(&segment_iden.shard_name).unwrap();

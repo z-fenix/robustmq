@@ -33,28 +33,22 @@ pub async fn apply_leader_and_isr(
     let shard = &segment.shard_name;
     let segment_seq = segment.segment_seq;
 
-    let Some(state) = cache_manager.get_segment_replica(shard, segment_seq) else {
-        return Err(StorageEngineError::NotSegmentState(
-            shard.to_string(),
-            segment_seq,
-        ));
-    };
-
-    let segment_iden = SegmentIdentity::new(shard, segment_seq);
-    let local_leader_epoch = cache_manager
-        .get_segment(&segment_iden)
-        .map(|s| s.leader_epoch)
-        .unwrap_or(0);
-    if segment.leader_epoch < local_leader_epoch {
-        return Ok(());
-    }
-
     if !segment.is_replica() {
         fetcher_manager.remove_segment(shard, segment_seq);
         cache_manager.remove_segment_replica(shard, segment_seq);
         return Ok(());
     }
 
+    cache_manager.add_segment_replica(shard, segment_seq);
+    let Some(state) = cache_manager.get_segment_replica(shard, segment_seq) else {
+        return Ok(());
+    };
+
+    let segment_iden = SegmentIdentity::new(shard, segment_seq);
+    let local_leader_epoch = cache_manager
+        .get_segment(&segment_iden)
+        .ok_or_else(|| StorageEngineError::SegmentNotExist(segment_iden.name()))?
+        .leader_epoch;
     let leader_epoch_changed = segment.leader_epoch > local_leader_epoch;
 
     if segment.leader == broker_id {
@@ -90,15 +84,14 @@ fn apply_as_leader(
 
     fetcher_manager.remove_segment(shard, segment_seq);
 
-    let leo = cache_manager
-        .get_offset_state(shard)
-        .map(|s| s.latest_offset)
-        .ok_or_else(|| StorageEngineError::NotOffsetState(shard.to_string()))?;
-    let mut epoch_cache =
-        LeaderEpochCache::load(rocksdb_engine_handler.clone(), shard, segment_seq)?;
-    epoch_cache.assign(segment.leader_epoch, leo)?;
-
     if leader_epoch_changed {
+        let leo = cache_manager
+            .get_offset_state(shard)
+            .map(|s| s.latest_offset)
+            .ok_or_else(|| StorageEngineError::NotOffsetState(shard.to_string()))?;
+        let mut epoch_cache =
+            LeaderEpochCache::load(rocksdb_engine_handler.clone(), shard, segment_seq)?;
+        epoch_cache.assign(segment.leader_epoch, leo)?;
         state.clear();
     }
 
@@ -153,15 +146,33 @@ mod tests {
             cm.clone(),
             memory,
             rocksdb,
+            db.clone(),
             client,
         ))
     }
 
     fn setup(cm: &Arc<StorageCacheManager>) {
-        cm.add_segment_replica("s", 0);
+        use metadata_struct::storage::shard::{EngineShard, EngineShardConfig};
+        cm.set_shard(EngineShard {
+            shard_name: "s".to_string(),
+            config: EngineShardConfig::default(),
+            ..Default::default()
+        });
+        cm.set_segment(&EngineSegment {
+            shard_name: "s".to_string(),
+            segment_seq: 0,
+            leader: 1,
+            leader_epoch: 0,
+            replicas: vec![Replica {
+                node_id: 1,
+                ..Default::default()
+            }],
+            isr: vec![1],
+            ..Default::default()
+        });
         cm.save_offset_state(
             "s".to_string(),
-            crate::commitlog::offset::ShardOffsetState::default(),
+            crate::core::offset::ShardOffsetState::default(),
         );
     }
 
@@ -236,27 +247,5 @@ mod tests {
 
         assert!(!mgr.is_fetching("s", 0));
         assert!(cm.get_segment_replica("s", 0).is_none());
-    }
-
-    #[tokio::test]
-    async fn stale_leader_epoch_is_ignored() {
-        let engine = test_build_memory_engine();
-        let cm = engine.cache_manager.clone();
-        let db = rocksdb_engine::test::test_rocksdb_instance();
-        let mgr = manager(&cm, &db);
-        setup(&cm);
-
-        apply_leader_and_isr(&cm, &db, &mgr, &segment(1, &[1, 2], 5))
-            .await
-            .unwrap();
-        // simulate dynamic_cache.rs: set_segment is called after apply
-        cm.set_segment(&segment(1, &[1, 2], 5));
-
-        apply_leader_and_isr(&cm, &db, &mgr, &segment(1, &[1, 2], 3))
-            .await
-            .unwrap();
-        // epoch stays at 5; stale notification ignored
-        let cache = LeaderEpochCache::load(db, "s", 0).unwrap();
-        assert_eq!(cache.latest_epoch(), 5);
     }
 }

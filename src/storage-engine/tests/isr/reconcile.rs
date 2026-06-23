@@ -28,7 +28,7 @@ mod tests {
     use rocksdb_engine::test::test_rocksdb_instance;
     use storage_engine::clients::manager::ClientConnectionManager;
     use storage_engine::commitlog::memory::engine::MemoryStorageEngine;
-    use storage_engine::commitlog::offset::ShardOffsetState;
+    use storage_engine::core::offset::ShardOffsetState;
     use storage_engine::isr::apply::apply_leader_and_isr;
     use storage_engine::isr::fetcher_manager::{
         build_engine_fetcher_manager, ReplicaFetcherManager,
@@ -39,11 +39,13 @@ mod tests {
 
     fn make_fetcher_manager(engine: &Arc<MemoryStorageEngine>) -> Arc<ReplicaFetcherManager> {
         let cm = engine.cache_manager.clone();
+        let db = engine.commit_log_offset.rocksdb_engine_handler.clone();
         let client = Arc::new(ClientConnectionManager::new(cm.clone(), 1));
         Arc::new(build_engine_fetcher_manager(
             cm,
             engine.clone(),
             make_rocksdb(engine),
+            db,
             client,
         ))
     }
@@ -55,10 +57,36 @@ mod tests {
         Arc<RocksDBEngine>,
         Arc<ReplicaFetcherManager>,
     ) {
+        use metadata_struct::storage::shard::{EngineShard, EngineShardConfig};
         let engine = make_engine();
         let cm = engine.cache_manager.clone();
         let mgr = make_fetcher_manager(&engine);
         set_broker_id(&cm, 1);
+        cm.set_shard(EngineShard {
+            shard_name: "t6-shard".to_string(),
+            config: EngineShardConfig::default(),
+            ..Default::default()
+        });
+        cm.set_segment(&EngineSegment {
+            shard_name: "t6-shard".to_string(),
+            segment_seq: 0,
+            leader: 1,
+            leader_epoch: 0,
+            replicas: vec![
+                Replica {
+                    replica_seq: 0,
+                    node_id: 1,
+                    fold: String::new(),
+                },
+                Replica {
+                    replica_seq: 1,
+                    node_id: 2,
+                    fold: String::new(),
+                },
+            ],
+            isr: vec![1, 2],
+            ..Default::default()
+        });
         cm.add_segment_replica("t6-shard", 0);
         cm.save_offset_state("t6-shard".to_string(), ShardOffsetState::default());
         (engine, test_rocksdb_instance(), mgr)

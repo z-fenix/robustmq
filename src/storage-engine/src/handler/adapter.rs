@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::core::error::StorageEngineError;
+use crate::core::offset::ShardOffset;
 use crate::core::read_key::{read_by_key, ReadByKeyParams};
 use crate::core::read_offset::{read_by_offset, ReadByOffsetParams};
 use crate::core::read_tag::{read_by_tag, ReadByTagParams};
-use crate::filesegment::offset::FileSegmentOffset;
 use crate::{
     clients::manager::ClientConnectionManager,
     commitlog::memory::engine::MemoryStorageEngine,
@@ -26,9 +26,10 @@ use crate::{
         shard::{create_shard_to_place, delete_shard_to_place},
         write::batch_write,
     },
-    filesegment::write::WriteManager,
+    filesegment::write_manager::WriteManager,
 };
 use common_base::error::common::CommonError;
+use common_config::broker::broker_config;
 use common_config::storage::StorageType;
 use common_metrics::storage_engine::{
     record_storage_engine_ops, record_storage_engine_ops_duration, record_storage_engine_ops_fail,
@@ -37,11 +38,11 @@ use grpc_clients::pool::ClientPool;
 use metadata_struct::adapter::adapter_offset::{AdapterOffsetStrategy, AdapterShardInfo};
 use metadata_struct::adapter::adapter_read_config::{AdapterReadConfig, AdapterWriteRespRow};
 use metadata_struct::adapter::adapter_record::AdapterWriteRecord;
-use metadata_struct::adapter::adapter_shard::{
-    AdapterShardDetail, AdapterShardDetailExtend, AdapterShardDetailOffset,
-};
+use metadata_struct::adapter::adapter_shard::{AdapterShardDetail, AdapterShardDetailOffset};
 use metadata_struct::storage::record::StorageRecord;
 use metadata_struct::storage::shard::EngineShard;
+use protocol::storage::codec::StorageEnginePacket;
+use protocol::storage::protocol::{ShardOffsetReq, ShardOffsetReqBody, ShardOffsetRespBody};
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
 
@@ -92,6 +93,43 @@ impl StorageEngineHandler {
         Ok(())
     }
 
+    /// Query a shard's offsets from its leader (used when this node is not the
+    /// leader and therefore has no local copy of the shard's offset state).
+    async fn shard_offset_remote(
+        &self,
+        leader_id: u64,
+        shard_name: &str,
+        by_timestamp: bool,
+        timestamp: u64,
+        strategy: AdapterOffsetStrategy,
+    ) -> Result<ShardOffsetRespBody, StorageEngineError> {
+        let req = ShardOffsetReq::new(ShardOffsetReqBody {
+            shard_name: shard_name.to_string(),
+            by_timestamp,
+            timestamp,
+            strategy: strategy as u8,
+        });
+        let resp = self
+            .client_connection_manager
+            .write_send(leader_id, StorageEnginePacket::ShardOffsetReq(req))
+            .await?;
+        match resp {
+            StorageEnginePacket::ShardOffsetResp(r) => {
+                if r.body.error_code != 0 {
+                    return Err(StorageEngineError::CommonErrorStr(format!(
+                        "Leader {leader_id} failed to resolve offsets for shard {shard_name} (error_code={})",
+                        r.body.error_code
+                    )));
+                }
+                Ok(r.body)
+            }
+            other => Err(StorageEngineError::ReceivedPacketError(
+                leader_id,
+                format!("Expected ShardOffsetResp, got {other}"),
+            )),
+        }
+    }
+
     pub async fn list_shard(
         &self,
         shard: Option<String>,
@@ -111,50 +149,51 @@ impl StorageEngineHandler {
         };
 
         let mut results = Vec::with_capacity(shards.len());
+        let local_broker_id = broker_config().broker_id;
         for shard in shards {
-            let (start_offset, end_offset) = match shard.config.storage_type {
-                StorageType::EngineMemory => {
-                    let o = &self.memory_storage_engine.commit_log_offset;
-                    let end = o
-                        .get_latest_offset(&shard.shard_name)
-                        .unwrap_or(0)
-                        .saturating_sub(1);
-                    (o.get_earliest_offset(&shard.shard_name).unwrap_or(0), end)
-                }
-                StorageType::EngineRocksDB => {
-                    let o = &self.rocksdb_storage_engine.commitlog_offset;
-                    let end = o
-                        .get_latest_offset(&shard.shard_name)
-                        .unwrap_or(0)
-                        .saturating_sub(1);
-                    (o.get_earliest_offset(&shard.shard_name).unwrap_or(0), end)
-                }
-                StorageType::EngineSegment => {
-                    let o = FileSegmentOffset::new(
-                        self.rocksdb_engine_handler.clone(),
-                        self.cache_manager.clone(),
-                    );
-                    let end = o
-                        .get_latest_offset(&shard.shard_name)
-                        .unwrap_or(0)
-                        .saturating_sub(1);
-                    (o.get_earliest_offset(&shard.shard_name).unwrap_or(0), end)
-                }
-                _ => (0, 0),
-            };
-
-            let high_watermark = self
+            let leader = self
                 .cache_manager
-                .get_offset_state(&shard.shard_name)
-                .map(|s| s.high_watermark_offset)
-                .unwrap_or(0);
+                .get_active_segment(&shard.shard_name)
+                .ok_or_else(|| {
+                    CommonError::CommonError(format!(
+                        "No active segment for shard {}",
+                        shard.shard_name
+                    ))
+                })?
+                .leader;
+
+            let (start_offset, end_offset, high_watermark) = if leader != local_broker_id {
+                let body = self
+                    .shard_offset_remote(
+                        leader,
+                        &shard.shard_name,
+                        false,
+                        0,
+                        AdapterOffsetStrategy::Earliest,
+                    )
+                    .await
+                    .map_err(|e| CommonError::CommonError(e.to_string()))?;
+                (body.start_offset, body.end_offset, body.high_watermark)
+            } else {
+                let offsets = ShardOffset::new(
+                    self.cache_manager.clone(),
+                    self.rocksdb_engine_handler.clone(),
+                )
+                .get_shard_offsets(&shard.shard_name)
+                .map_err(|e| CommonError::CommonError(e.to_string()))?;
+                (
+                    offsets.earliest_offset,
+                    offsets.latest_offset.saturating_sub(1),
+                    offsets.high_watermark_offset,
+                )
+            };
 
             results.push(AdapterShardDetail {
                 shard_name: shard.shard_name.clone(),
                 topic_name: shard.topic_name.clone(),
                 config: shard.config.clone(),
                 desc: shard.desc.clone(),
-                extend: AdapterShardDetailExtend::StorageEngine(shard),
+                shard,
                 offset: AdapterShardDetailOffset {
                     start_offset,
                     end_offset,
@@ -182,6 +221,7 @@ impl StorageEngineHandler {
         &self,
         shard: &str,
         records: &[AdapterWriteRecord],
+        acks: i8,
     ) -> Result<Vec<AdapterWriteRespRow>, CommonError> {
         let start = std::time::Instant::now();
         let result = batch_write(
@@ -192,7 +232,7 @@ impl StorageEngineHandler {
             &self.client_connection_manager,
             shard,
             records,
-            1,
+            acks,
             0,
         )
         .await;
@@ -224,6 +264,7 @@ impl StorageEngineHandler {
             shard_name: shard.to_string(),
             offset,
             read_config: read_config.clone(),
+            single_segment: false,
         })
         .await;
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -466,6 +507,26 @@ impl StorageEngineHandler {
             return Err(StorageEngineError::ShardNotExist(shard_name.to_owned()));
         };
 
+        // For memory/rocksdb shards, offsets live only on the segment leader. If
+        // this node is not the leader, ask the leader to resolve the timestamp.
+        if matches!(
+            shard.config.storage_type,
+            StorageType::EngineMemory | StorageType::EngineRocksDB
+        ) {
+            if let Some(leader) = self
+                .cache_manager
+                .get_active_segment(shard_name)
+                .map(|s| s.leader)
+            {
+                if leader != broker_config().broker_id {
+                    let body = self
+                        .shard_offset_remote(leader, shard_name, true, timestamp, strategy.clone())
+                        .await?;
+                    return Ok(body.offset);
+                }
+            }
+        }
+
         let result = match shard.config.storage_type {
             StorageType::EngineMemory => {
                 self.memory_storage_engine
@@ -480,8 +541,38 @@ impl StorageEngineHandler {
             }
 
             StorageType::EngineSegment => {
-                // self.get_shard_offset_by_timestamp_by_segment(shard_name, timestamp, strategy)?
-                0
+                use crate::filesegment::index::read::get_in_segment_by_timestamp;
+                use crate::filesegment::SegmentIdentity;
+
+                // Find which segment owns this timestamp; route to that segment's leader.
+                let target_segment =
+                    get_in_segment_by_timestamp(&self.cache_manager, shard_name, timestamp as i64)?;
+
+                if let Some(seg_seq) = target_segment {
+                    let seg_iden = SegmentIdentity::new(shard_name, seg_seq);
+                    if let Some(seg) = self.cache_manager.get_segment(&seg_iden) {
+                        if seg.leader != broker_config().broker_id {
+                            let body = self
+                                .shard_offset_remote(
+                                    seg.leader,
+                                    shard_name,
+                                    true,
+                                    timestamp,
+                                    strategy.clone(),
+                                )
+                                .await?;
+                            return Ok(body.offset);
+                        }
+                    }
+                }
+
+                crate::filesegment::read::get_segment_offset_by_timestamp(
+                    &self.cache_manager,
+                    &self.rocksdb_engine_handler,
+                    shard_name,
+                    timestamp,
+                    strategy,
+                )?
             }
 
             _ => {

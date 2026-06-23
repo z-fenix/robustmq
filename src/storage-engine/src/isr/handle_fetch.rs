@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use crate::commitlog::memory::engine::MemoryStorageEngine;
-use crate::commitlog::offset::CommitLogOffset;
 use crate::commitlog::rocksdb::engine::RocksDBStorageEngine;
 use crate::core::cache::StorageCacheManager;
+use crate::core::offset::ShardOffset;
+use crate::filesegment::replica::FileSegmentReplicaLog;
 use crate::filesegment::SegmentIdentity;
 use crate::isr::follower::advance_hw;
 use crate::isr::follower::update_follower_progress;
@@ -35,6 +36,7 @@ use tokio::time::sleep;
 pub struct FetchEngines {
     pub memory: Arc<MemoryStorageEngine>,
     pub rocksdb: Arc<RocksDBStorageEngine>,
+    pub segment: Arc<FileSegmentReplicaLog>,
 }
 
 pub async fn handle_fetch(
@@ -86,6 +88,17 @@ async fn collect(
                     cache_manager,
                     rocksdb_engine_handler,
                     engines.rocksdb.as_ref(),
+                    req.replica_id,
+                    req.replica_broker_epoch,
+                    shard_req,
+                )
+                .await
+            }
+            Some(StorageType::EngineSegment) => {
+                fetch_one_shard(
+                    cache_manager,
+                    rocksdb_engine_handler,
+                    engines.segment.as_ref(),
                     req.replica_id,
                     req.replica_broker_epoch,
                     shard_req,
@@ -195,8 +208,7 @@ pub async fn fetch_one_shard<L: ReplicaLog>(
         return resp;
     }
 
-    let commit_log_offset =
-        CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
+    let commit_log_offset = ShardOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
     let Some(hw) = advance_hw(
         cache_manager,
         &commit_log_offset,
@@ -261,7 +273,7 @@ mod tests {
         engine.cache_manager.add_segment_replica("s", 0);
         engine.cache_manager.save_offset_state(
             "s".to_string(),
-            crate::commitlog::offset::ShardOffsetState::default(),
+            crate::core::offset::ShardOffsetState::default(),
         );
         engine
             .append_at(
@@ -348,7 +360,7 @@ mod tests {
         mem.cache_manager.add_segment_replica("s", 0);
         mem.cache_manager.save_offset_state(
             "s".to_string(),
-            crate::commitlog::offset::ShardOffsetState::default(),
+            crate::core::offset::ShardOffsetState::default(),
         );
         if !records.is_empty() {
             mem.append_at("s", 0, 0, records).await.unwrap();
@@ -373,9 +385,14 @@ mod tests {
     }
 
     fn engines(mem: &Arc<MemoryStorageEngine>) -> FetchEngines {
+        let rocksdb = mem.commit_log_offset.rocksdb_engine_handler.clone();
         FetchEngines {
             memory: mem.clone(),
             rocksdb: Arc::new(crate::core::test_tool::test_build_rocksdb_engine()),
+            segment: Arc::new(FileSegmentReplicaLog::new(
+                mem.cache_manager.clone(),
+                rocksdb,
+            )),
         }
     }
 
@@ -441,7 +458,7 @@ mod tests {
             mem.cache_manager.add_segment_replica(shard, 0);
             mem.cache_manager.save_offset_state(
                 shard.to_string(),
-                crate::commitlog::offset::ShardOffsetState::default(),
+                crate::core::offset::ShardOffsetState::default(),
             );
         }
         mem.append_at("s1", 0, 0, vec![record(0, "a"), record(1, "b")])
