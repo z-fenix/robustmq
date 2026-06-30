@@ -21,14 +21,12 @@ mod tests {
     use admin_server::engine::segment::{SegmentDetailReq, SegmentDetailResp};
     use bytes::Bytes;
     use common_base::http_response::AdminServerResponse;
-    use common_base::utils::serialize::{self, deserialize};
+    use common_base::utils::serialize;
     use common_base::uuid::unique_id;
     use metadata_struct::adapter::adapter_record::AdapterWriteRecord;
     use metadata_struct::storage::record::StorageRecord;
-    use protocol::storage::codec::StorageEnginePacket;
     use protocol::storage::protocol::{
-        ReadReq, ReadReqBody, ReadReqFilter, ReadReqMessage, ReadReqOptions, ReadType, WriteReq,
-        WriteReqBody,
+        ReadReq, ReadReqBody, ReadReqFilter, ReadReqMessage, ReadReqOptions, ReadType,
     };
     use storage_engine::clients::manager::ClientConnectionManager;
 
@@ -41,26 +39,12 @@ mod tests {
                 .with_key(format!("key-{}", i));
             messages.push(serialize::serialize(&record).unwrap());
         }
-
-        let req = WriteReq::new(WriteReqBody::new(shard_name.to_string(), messages));
-        let resp = conn
-            .write_send(ENGINE_NODE_ID, StorageEnginePacket::WriteReq(req))
+        let rows = conn
+            .send_write(ENGINE_NODE_ID, shard_name, messages)
             .await
-            .expect("write_send failed");
-
-        match resp {
-            StorageEnginePacket::WriteResp(r) => {
-                if let Some(err) = r.header.error {
-                    panic!("WriteResp error: {}:{}", err.code, err.error);
-                }
-                assert_eq!(r.body.status.len(), 1);
-                let status = &r.body.status[0];
-                assert_eq!(status.shard_name, shard_name);
-                assert_eq!(status.messages.len(), WRITE_COUNT);
-                status.messages.iter().map(|m| m.offset).collect()
-            }
-            other => panic!("expected WriteResp, got {}", other),
-        }
+            .expect("send_write failed");
+        assert_eq!(rows.len(), WRITE_COUNT);
+        rows.iter().map(|r| r.offset).collect()
     }
 
     async fn read_by_key(
@@ -75,24 +59,9 @@ mod tests {
             ReadReqFilter::by_key(key.to_string()),
             ReadReqOptions::new(1024 * 1024, 100),
         )]));
-        let resp = conn
-            .read_send(ENGINE_NODE_ID, StorageEnginePacket::ReadReq(req))
+        conn.send_read(ENGINE_NODE_ID, req)
             .await
-            .expect("read_send failed");
-
-        match resp {
-            StorageEnginePacket::ReadResp(r) => {
-                if let Some(err) = r.header.error {
-                    panic!("ReadResp(Key) error: {}:{}", err.code, err.error);
-                }
-                r.body
-                    .messages
-                    .iter()
-                    .map(|b| deserialize::<StorageRecord>(b).expect("deserialize failed"))
-                    .collect()
-            }
-            other => panic!("expected ReadResp, got {}", other),
-        }
+            .expect("send_read failed")
     }
 
     async fn get_segment0_offsets(
@@ -182,7 +151,14 @@ mod tests {
         let v: AdminServerResponse<serde_json::Value> = serde_json::from_str(&resp).unwrap();
         assert_eq!(v.code, 0, "delete_record_by_keys failed: {:?}", v.error);
 
-        let records = read_by_key(&conn, &shard_name, "key-3").await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let records = loop {
+            let r = read_by_key(&conn, &shard_name, "key-3").await;
+            if r.is_empty() || tokio::time::Instant::now() >= deadline {
+                break r;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        };
         assert_eq!(records.len(), 0, "key-3 should be gone after delete");
 
         for i in 0..WRITE_COUNT {

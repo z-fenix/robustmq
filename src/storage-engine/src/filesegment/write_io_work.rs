@@ -38,60 +38,19 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::{error, info};
 
-#[derive(Clone)]
-pub struct IoWork {
-    offset_data: dashmap::DashMap<String, u64>,
-    shard_offset: ShardOffset,
-}
-
-impl IoWork {
-    pub fn new(
-        rocksdb_engine_handler: Arc<RocksDBEngine>,
-        cache_manager: Arc<StorageCacheManager>,
-        io_seq: u32,
-    ) -> Self {
-        info!("io worker {} start success", io_seq);
-        IoWork {
-            offset_data: dashmap::DashMap::with_capacity(16),
-            shard_offset: ShardOffset::new(cache_manager, rocksdb_engine_handler),
-        }
-    }
-
-    pub fn get_offset(&self, segment_iden: &SegmentIdentity) -> Result<u64, StorageEngineError> {
-        let key = segment_iden.name();
-        if let Some(offset) = self.offset_data.get(&key) {
-            return Ok(*offset);
-        }
-        let result = self
-            .shard_offset
-            .get_latest_offset(&segment_iden.shard_name)?;
-        self.offset_data.insert(key, result);
-        Ok(result)
-    }
-
-    pub fn save_offset(
-        &self,
-        segment_iden: &SegmentIdentity,
-        offset: u64,
-    ) -> Result<(), StorageEngineError> {
-        self.shard_offset
-            .save_latest_offset(&segment_iden.shard_name, offset)?;
-        self.offset_data.insert(segment_iden.name(), offset);
-        Ok(())
-    }
-}
-
 pub fn create_io_thread(
-    io_work: Arc<IoWork>,
     rocksdb_engine_handler: Arc<RocksDBEngine>,
     cache_manager: Arc<StorageCacheManager>,
     client_pool: Arc<ClientPool>,
     mut data_recv: mpsc::Receiver<WriteChannelData>,
     stop_send: tokio::sync::broadcast::Sender<bool>,
+    io_seq: u32,
 ) {
     tokio::spawn(Box::pin(async move {
-        let mut stop_recv = stop_send.subscribe();
+        let shard_offset = ShardOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
+        info!("io worker {} start success", io_seq);
 
+        let mut stop_recv = stop_send.subscribe();
         let mut acc = BatchAccumulator::new();
         let mut tmp_offset_info: HashMap<String, u64> = HashMap::new();
 
@@ -121,7 +80,7 @@ pub fn create_io_thread(
                 let start_offset = if let Some(&o) = tmp_offset_info.get(&shard_name) {
                     o
                 } else {
-                    match io_work.get_offset(&channel_data.segment_iden) {
+                    match shard_offset.get_latest_offset(&shard_name) {
                         Ok(o) => o,
                         Err(ex) => {
                             let segment = channel_data.segment_iden.segment;
@@ -175,19 +134,21 @@ pub fn create_io_thread(
                                 });
                             }
                         }
-                        let ok = if has_written {
-                            success_save_offset(
-                                &mut acc.sender_list,
-                                pkid_offset_list,
-                                &io_work,
-                                segment_iden,
-                            )
-                        } else {
-                            true
-                        };
-                        if ok {
-                            call_success_response(&mut acc.sender_list, segment_iden, &resp);
+                        if has_written {
+                            if let Some(max_offset) = pkid_offset_list.values().max() {
+                                if let Err(ex) = shard_offset
+                                    .save_latest_offset(&segment_iden.shard_name, *max_offset + 1)
+                                {
+                                    call_error_response(
+                                        &mut acc.sender_list,
+                                        segment_iden,
+                                        &ex.to_string(),
+                                    );
+                                    continue;
+                                }
+                            }
                         }
+                        call_success_response(&mut acc.sender_list, segment_iden, &resp);
                     }
                     Err(ex) => {
                         call_error_response(&mut acc.sender_list, segment_iden, &ex.to_string());
@@ -456,21 +417,6 @@ async fn batch_write(
         last_offset,
         ..Default::default()
     }))
-}
-
-fn success_save_offset(
-    shard_sender_list: &mut HashMap<SegmentIdentity, Vec<oneshot::Sender<SegmentWriteResp>>>,
-    pkid_offset_list: &HashMap<u64, u64>,
-    io_work: &Arc<IoWork>,
-    segment_iden: &SegmentIdentity,
-) -> bool {
-    if let Some(max_offset) = pkid_offset_list.values().max() {
-        if let Err(ex) = io_work.save_offset(segment_iden, *max_offset + 1) {
-            call_error_response(shard_sender_list, segment_iden, &ex.to_string());
-            return false;
-        }
-    }
-    true
 }
 
 fn call_success_response(
